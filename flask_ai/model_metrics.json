@@ -1,0 +1,123 @@
+{
+  "schema_version": "gym-web-metrics-v1",
+  "experiment_id": "synthetic-5b2e4cb5f211-split42",
+  "data_kind": "synthetic",
+  "metric_scale": "0_to_1",
+  "display_instruction_vi": "Nhân 100 và làm tròn 2 chữ số để hiển thị phần trăm.",
+  "positive_class": 1,
+  "prediction_horizon_days": 30,
+  "target_definition_vi": "Kết quả giả lập hội viên hủy hợp đồng hoặc hết hạn mà không gia hạn trong 30 ngày sau thời điểm ghi nhận cuối tháng. Churn=1 nếu xảy ra, Churn=0 nếu không. Giả định mọi hồ sơ được theo dõi đủ 30 ngày. Không có nhật ký sự kiện thật; nhãn được lấy mẫu từ xác suất giả định.",
+  "dataset": {
+    "filename": "gym_churn_vn_synthetic.csv",
+    "sha256": "5b2e4cb5f211bc73a7640a124333930b71576dd6cee9f59b47351eca2a4c37a2",
+    "rows": 4000,
+    "generation_seed": 20261021,
+    "class_counts": {
+      "0": 2886,
+      "1": 1114
+    }
+  },
+  "evaluation": {
+    "method": "single_stratified_holdout",
+    "train_fraction": 0.7,
+    "test_fraction": 0.3,
+    "split_seed": 42,
+    "train_rows": 2800,
+    "test_rows": 1200,
+    "train_class_counts": {
+      "0": 2020,
+      "1": 780
+    },
+    "test_class_counts": {
+      "0": 866,
+      "1": 334
+    },
+    "train_sha256": "18df88c8b81a0f2248b5198185ebdcc7cf8c71f1c88bf739a0669b7f5480479c",
+    "test_sha256": "f16f9bb11977ac56d4a989fa84c4fcb3cce94d64126287e91ada24ca1fe0fcd0",
+    "decision_rule": "p(class 1) > 0.5; equality predicts class 0",
+    "hyperparameter_tuning": false,
+    "cross_validation": false
+  },
+  "features": [
+    "gender",
+    "Near_Location",
+    "Partner",
+    "Promo_friends",
+    "Phone",
+    "Contract_period",
+    "Group_visits",
+    "Age",
+    "Avg_additional_charges_total",
+    "Month_to_end_contract",
+    "Lifetime",
+    "Avg_class_frequency_total",
+    "Avg_class_frequency_current_month"
+  ],
+  "models": {
+    "logistic": {
+      "accuracy": 0.7516666666666667,
+      "precision": 0.6666666666666666,
+      "recall": 0.2155688622754491,
+      "f1": 0.3257918552036199,
+      "confusion_matrix": {
+        "TN": 830,
+        "FP": 36,
+        "FN": 262,
+        "TP": 72
+      },
+      "parameters": {
+        "max_iter": 1000,
+        "random_state": 42
+      },
+      "versions": {
+        "python": "3.12.1",
+        "scikit_learn": "1.8.0",
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "joblib": "1.5.3"
+      },
+      "evaluated_at_utc": "2026-10-21T09:31:32.734771+00:00",
+      "model_file": "logistic.joblib",
+      "model_sha256": "02378958683d834ae3fb4bffd6782cd48bb6c78ad28023e4b435a8d0b2f366a4",
+      "preprocessing": "StandardScaler fitted on train, saved in pipeline"
+    },
+    "random_forest": {
+      "accuracy": 0.7566666666666667,
+      "precision": 0.6141304347826086,
+      "recall": 0.3383233532934132,
+      "f1": 0.4362934362934363,
+      "confusion_matrix": {
+        "TN": 795,
+        "FP": 71,
+        "FN": 221,
+        "TP": 113
+      },
+      "parameters": {
+        "n_estimators": 100,
+        "random_state": 42,
+        "n_jobs": -1,
+        "max_depth": null,
+        "min_samples_leaf": 1,
+        "class_weight": null
+      },
+      "versions": {
+        "python": "3.12.1",
+        "scikit_learn": "1.8.0",
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "joblib": "1.5.3"
+      },
+      "evaluated_at_utc": "2026-10-21T09:31:33.697364+00:00",
+      "model_file": "random_forest.joblib",
+      "model_sha256": "47b73823afa423d73982bd3cca31e9301457775c6ad20af71c71e528d28ef0fc",
+      "preprocessing": "None"
+    }
+  },
+  "limitations_vi": [
+    "Chưa hiệu chỉnh theo khảo sát hay dữ liệu hội viên Việt Nam.",
+    "Quy tắc sinh gồm các ngưỡng và tương tác nên có thể tạo lợi thế cho mô hình cây.",
+    "Một số cột được giữ để tương thích nhưng không trực tiếp ảnh hưởng công thức sinh nhãn.",
+    "Kết quả đánh giá chỉ có ý nghĩa trong kịch bản mô phỏng; không chứng minh hiệu quả thực tế."
+  ],
+  "majority_baseline_accuracy": 0.7216666666666667
+}
