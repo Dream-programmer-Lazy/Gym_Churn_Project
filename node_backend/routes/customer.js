@@ -1,206 +1,212 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
+const multer = require('multer');
 const Customer = require('../models/Customer');
 const verifyToken = require('../middleware/auth');
-const multer = require('multer');
-const upload = multer({ dest: 'uploads/' });
-const fs = require('fs');
+const {
+    DEFAULT_REGION, AiError, normalizeRegion, normalizeModelType, pickFeatures,
+    callFlask, predictOne, predictBatch, toPredictionDoc, parseCsv, sendError,
+} = require('../utils/ai');
 
-// --- API MỚI: LẤY 4 CHỈ SỐ CỦA 2 MÔ HÌNH TỪ FLASK ---
+// CSV đọc thẳng trong RAM (không tạo file tạm trong uploads/), tối đa 5MB
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// Bọc multer để lỗi upload (file quá lớn, sai tên trường) trả JSON rõ ràng thay vì lỗi 500
+const uploadCsv = (req, res, next) => upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File CSV vượt quá 5MB.' });
+    return res.status(400).json({ error: `Lỗi tải file: ${err.message}` });
+});
+
+const ADMIN_LANG = 'vi'; // giao diện Admin là tiếng Việt -> lý do lưu vào Mongo luôn bằng tiếng Việt
+const HISTORY_LIMIT = 50; // giữ tối đa 50 lần dự báo gần nhất cho mỗi hội viên
+const historyPush = (prediction) => ({ predictionHistory: { $each: [prediction], $slice: -HISTORY_LIMIT } });
+
+// Các trường Admin được phép sửa (chặn ghi đè _id, prediction, password, ...)
+const EDITABLE_FIELDS = ['fullName', 'actualPhoneNumber'];
+
+// --- 0. CHỈ SỐ ĐÁNH GIÁ MÔ HÌNH (theo thị trường, mặc định vn) ---
 router.get('/metrics', verifyToken, async (req, res) => {
     try {
-        const flaskResponse = await axios.get('http://127.0.0.1:5000/metrics');
-        res.status(200).json(flaskResponse.data);
+        const region = normalizeRegion(req.query.region);
+        const data = await callFlask('get', '/metrics', undefined, { region });
+        res.status(200).json(data);
     } catch (error) {
-        console.error("Lỗi lấy chỉ số mô hình:", error.message);
-        res.status(500).json({ error: "Lỗi kết nối đến AI Server để lấy metrics." });
+        sendError(res, error, 'Lỗi kết nối đến AI Server để lấy metrics.');
     }
 });
 
-// 1. API: THÊM KHÁCH HÀNG MỚI & DỰ ĐOÁN AI
+// --- 1. THÊM HỘI VIÊN MỚI & DỰ BÁO ---
 router.post('/', verifyToken, async (req, res) => {
     try {
-        const data = req.body;
-        console.log(`➡️ Đang gọi AI (Flask) với mô hình: ${data.model_type || 'logistic'}`);
+        const body = req.body || {};
+        if (!body.fullName || !String(body.fullName).trim()) throw new AiError(400, 'Vui lòng nhập họ và tên.');
 
-        const flaskResponse = await axios.post('http://127.0.0.1:5000/predict', data);
-        const predictionResult = flaskResponse.data;
+        const region = normalizeRegion(body.region);
+        const modelType = normalizeModelType(body.model_type);
+        const features = pickFeatures(body);
+        console.log(`➡️ Dự báo hội viên mới | thị trường: ${region} | mô hình: ${modelType}`);
 
+        const prediction = toPredictionDoc(await predictOne(features, region, modelType, ADMIN_LANG));
         const newCustomer = new Customer({
-            ...data, // Copy fullName, phone và 13 thuộc tính
-            prediction: {
-                probability_percent: predictionResult.probability_percent,
-                risk_level: predictionResult.risk_level,
-                model_used: predictionResult.model_used,
-                last_predicted_at: new Date()
-            }
+            fullName: String(body.fullName).trim(),
+            actualPhoneNumber: body.actualPhoneNumber,
+            ...features,
+            region,
+            status: 'Đang hoạt động', // Admin tự thêm -> hội viên đã hoạt động, không cần duyệt
+            prediction,
+            predictionHistory: [prediction],
         });
 
         const savedCustomer = await newCustomer.save();
-        res.status(201).json({ message: "Thêm khách hàng và dự báo thành công!", customer: savedCustomer });
-
+        res.status(201).json({ message: 'Thêm hội viên và dự báo thành công!', customer: savedCustomer });
     } catch (error) {
-        console.error("❌ Lỗi:", error.message);
-        res.status(500).json({ error: "Lỗi server khi xử lý khách hàng." });
+        sendError(res, error, 'Lỗi server khi thêm hội viên.');
     }
 });
 
-// 2. LẤY DANH SÁCH KHÁCH HÀNG
+// --- 2. LẤY DANH SÁCH HỘI VIÊN (không trả mật khẩu & lịch sử dự báo cho nhẹ) ---
 router.get('/', verifyToken, async (req, res) => {
     try {
-        const customers = await Customer.find().sort({ createdAt: -1 });
+        const customers = await Customer.find()
+            .select('-password -predictionHistory')
+            .sort({ createdAt: -1 });
         res.status(200).json(customers);
     } catch (error) {
-        res.status(500).json({ error: "Lỗi khi lấy danh sách khách hàng." });
+        sendError(res, error, 'Lỗi khi lấy danh sách hội viên.');
     }
 });
 
-// 3. XÓA KHÁCH HÀNG
+// --- 3. XÓA HỘI VIÊN ---
 router.delete('/:id', verifyToken, async (req, res) => {
     try {
         const deletedCustomer = await Customer.findByIdAndDelete(req.params.id);
-        if (!deletedCustomer) return res.status(404).json({ error: "Không tìm thấy khách hàng để xóa" });
-        res.status(200).json({ message: "Đã xóa khách hàng thành công!" });
+        if (!deletedCustomer) return res.status(404).json({ error: 'Không tìm thấy hội viên để xóa.' });
+        res.status(200).json({ message: 'Đã xóa hội viên thành công!' });
     } catch (error) {
-        res.status(500).json({ error: "Lỗi server khi xóa khách hàng." });
+        sendError(res, error, 'Lỗi server khi xóa hội viên.');
     }
 });
 
-// 4. CẬP NHẬT & DỰ BÁO LẠI
+// --- 4. CẬP NHẬT & DỰ BÁO LẠI ---
 router.put('/:id', verifyToken, async (req, res) => {
     try {
-        const data = req.body;
-        const flaskResponse = await axios.post('http://127.0.0.1:5000/predict', data);
-        const predictionResult = flaskResponse.data;
+        const existing = await Customer.findById(req.params.id).select('region');
+        if (!existing) return res.status(404).json({ error: 'Không tìm thấy hội viên.' });
 
-        const updateData = {
-            ...data,
-            prediction: {
-                probability_percent: predictionResult.probability_percent,
-                risk_level: predictionResult.risk_level,
-                model_used: predictionResult.model_used,
-                last_predicted_at: new Date()
-            }
-        };
+        const body = req.body || {};
+        const region = normalizeRegion(body.region || existing.region || DEFAULT_REGION);
+        const modelType = normalizeModelType(body.model_type);
+        const features = pickFeatures(body);
 
-        const updatedCustomer = await Customer.findByIdAndUpdate(req.params.id, updateData, { new: true });
-        if (!updatedCustomer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
+        const prediction = toPredictionDoc(await predictOne(features, region, modelType, ADMIN_LANG));
 
-        res.status(200).json({ message: "Cập nhật và dự báo lại thành công!", customer: updatedCustomer });
+        const $set = { ...features, region, prediction };
+        EDITABLE_FIELDS.forEach((f) => { if (body[f] !== undefined) $set[f] = body[f]; });
+
+        const updatedCustomer = await Customer.findByIdAndUpdate(
+            req.params.id,
+            { $set, $push: historyPush(prediction) },
+            { new: true, runValidators: true },
+        ).select('-password -predictionHistory');
+
+        res.status(200).json({ message: 'Cập nhật và dự báo lại thành công!', customer: updatedCustomer });
     } catch (error) {
-        res.status(500).json({ error: "Lỗi server khi cập nhật khách hàng." });
+        sendError(res, error, 'Lỗi server khi cập nhật hội viên.');
     }
 });
 
-// 5. DUYỆT KHÁCH HÀNG (Admin)
+// --- 5. DUYỆT HỘI VIÊN TỰ ĐĂNG KÝ (Admin) ---
 router.put('/:id/approve', verifyToken, async (req, res) => {
     try {
         const customer = await Customer.findById(req.params.id);
-        if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng!" });
-        if (customer.status === 'Đang hoạt động') return res.status(400).json({ error: "Đã được duyệt rồi!" });
+        if (!customer) return res.status(404).json({ error: 'Không tìm thấy hội viên!' });
+        if (customer.status === 'Đang hoạt động') return res.status(400).json({ error: 'Hội viên này đã được duyệt rồi!' });
 
-        const aiData = {
-            gender: customer.gender, Near_Location: customer.Near_Location, Partner: customer.Partner,
-            Promo_friends: customer.Promo_friends, Phone: customer.Phone, Contract_period: customer.Contract_period,
-            Group_visits: customer.Group_visits, Age: customer.Age, Avg_additional_charges_total: customer.Avg_additional_charges_total,
-            Month_to_end_contract: customer.Month_to_end_contract, Lifetime: customer.Lifetime,
-            Avg_class_frequency_total: customer.Avg_class_frequency_total, Avg_class_frequency_current_month: customer.Avg_class_frequency_current_month,
-            model_type: req.body.model_type || 'logistic' // Truyền model_type nếu có
-        };
+        const body = req.body || {};
+        const region = normalizeRegion(customer.region || body.region || DEFAULT_REGION);
+        const modelType = normalizeModelType(body.model_type);
 
-        const flaskResponse = await axios.post('http://127.0.0.1:5000/predict', aiData);
-        const predictionResult = flaskResponse.data;
+        const prediction = toPredictionDoc(await predictOne(pickFeatures(customer.toObject()), region, modelType, ADMIN_LANG));
 
         customer.status = 'Đang hoạt động';
-        customer.prediction = {
-            probability_percent: predictionResult.probability_percent,
-            risk_level: predictionResult.risk_level,
-            model_used: predictionResult.model_used,
-            last_predicted_at: new Date()
-        };
+        customer.region = region;
+        customer.prediction = prediction;
+        if (Array.isArray(customer.predictionHistory)) {
+            customer.predictionHistory.push(prediction);
+            if (customer.predictionHistory.length > HISTORY_LIMIT) customer.predictionHistory.shift();
+        }
 
         await customer.save();
-        res.status(200).json({ message: "Đã duyệt và đánh giá rủi ro thành công!", customer });
+        const plain = customer.toObject();
+        delete plain.password;
+        delete plain.predictionHistory;
+        res.status(200).json({ message: 'Đã duyệt và đánh giá rủi ro thành công!', customer: plain });
     } catch (error) {
-        res.status(500).json({ error: "Lỗi server khi duyệt khách hàng." });
+        sendError(res, error, 'Lỗi server khi duyệt hội viên.');
     }
 });
 
-// 6. UPLOAD FILE CSV
-router.post('/upload-csv', verifyToken, upload.single('file'), async (req, res) => {
+// --- 6. NHẬP HỘI VIÊN TỪ CSV & DỰ BÁO HÀNG LOẠT ---
+router.post('/upload-csv', verifyToken, uploadCsv, async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ error: "Vui lòng chọn một file CSV hợp lệ!" });
-        
-        const model_type = req.body.model_type || 'logistic'; // Lấy loại mô hình do Admin chọn
-        const filePath = req.file.path;
-        const fileContent = fs.readFileSync(filePath, 'utf8');
-        const lines = fileContent.split(/\r?\n/).filter(line => line.trim() !== '');
+        if (!req.file) throw new AiError(400, 'Vui lòng chọn một file CSV.');
 
-        if (lines.length < 2) {
-            fs.unlinkSync(filePath);
-            return res.status(400).json({ error: "File CSV trống hoặc sai định dạng!" });
+        const region = normalizeRegion(req.body.region);
+        const modelType = normalizeModelType(req.body.model_type);
+        const { rows, missingColumns } = parseCsv(req.file.buffer);
+
+        if (missingColumns.length) {
+            throw new AiError(400, `File CSV thiếu ${missingColumns.length} cột bắt buộc: ${missingColumns.join(', ')}.`);
         }
 
-        const headers = lines[0].split(',').map(h => h.trim());
-        let importedCount = 0;
+        const featureRows = rows.map(pickFeatures);
+                const results = await predictBatch(featureRows, region, modelType, ADMIN_LANG);
 
-        for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(',').map(v => v.trim());
-            if (values.length !== headers.length) continue;
-
-            let rowData = {};
-            headers.forEach((h, index) => { rowData[h] = values[index]; });
-
-            const customerPayload = {
-                fullName: rowData.fullName || `Hội viên chi nhánh ${i}`,
-                actualPhoneNumber: rowData.actualPhoneNumber || '0900000000',
-                gender: Number(rowData.gender) || 1, Near_Location: Number(rowData.Near_Location) || 1,
-                Partner: Number(rowData.Partner) || 0, Promo_friends: Number(rowData.Promo_friends) || 0,
-                Phone: Number(rowData.Phone) || 1, Contract_period: Number(rowData.Contract_period) || 6,
-                Group_visits: Number(rowData.Group_visits) || 0, Age: Number(rowData.Age) || 25,
-                Avg_additional_charges_total: Number(rowData.Avg_additional_charges_total) || 100,
-                Month_to_end_contract: Number(rowData.Month_to_end_contract) || 5, Lifetime: Number(rowData.Lifetime) || 3,
-                Avg_class_frequency_total: Number(rowData.Avg_class_frequency_total) || 2.5,
-                Avg_class_frequency_current_month: Number(rowData.Avg_class_frequency_current_month) || 2.0,
-                status: 'Đang hoạt động',
-                model_type: model_type // Ép chạy mô hình theo yêu cầu
-            };
-
-            try {
-                const flaskRes = await axios.post('http://127.0.0.1:5000/predict', customerPayload);
-                customerPayload.prediction = {
-                    probability_percent: flaskRes.data.probability_percent,
-                    risk_level: flaskRes.data.risk_level,
-                    model_used: flaskRes.data.model_used,
-                    last_predicted_at: new Date()
-                };
-
-                const newCustomer = new Customer(customerPayload);
-                await newCustomer.save();
-                importedCount++;
-            } catch (aiErr) {
-                console.error(`Lỗi dự đoán dòng ${i}:`, aiErr.message);
+        const docs = [];
+        const rowErrors = [];
+        results.forEach((r, idx) => {
+            const row = rows[idx];
+            if (!r.ok) {
+                rowErrors.push({ line: row.__line, message: r.errors.map((e) => e.message).join(' ') });
+                return;
             }
-        }
+            const prediction = toPredictionDoc(r);
+            docs.push({
+                fullName: (row.fullName || '').trim() || `Hội viên CSV dòng ${row.__line}`,
+                actualPhoneNumber: (row.actualPhoneNumber || '').trim() || undefined,
+                ...featureRows[idx],
+                region,
+                status: 'Đang hoạt động',
+                prediction,
+                predictionHistory: [prediction],
+            });
+        });
 
-        fs.unlinkSync(filePath);
-        res.status(200).json({ message: `Đã phân tích ${model_type} và lưu ${importedCount} hội viên.` });
+        if (docs.length) await Customer.insertMany(docs, { ordered: false });
 
+        const message = `Đã nhập ${docs.length}/${rows.length} hội viên (thị trường ${region}, mô hình ${modelType}).`
+            + (rowErrors.length ? ` ${rowErrors.length} dòng bị lỗi và không được lưu.` : '');
+        res.status(docs.length ? 200 : 422).json({
+            message,
+            ...(docs.length ? {} : { error: 'Không có dòng nào hợp lệ để lưu. Xem chi tiết lỗi từng dòng.' }),
+            imported: docs.length,
+            failed: rowErrors.length,
+            rowErrors: rowErrors.slice(0, 100), // tối đa 100 lỗi đầu tiên
+        });
     } catch (error) {
-        res.status(500).json({ error: "Lỗi phân tích file CSV." });
+        sendError(res, error, 'Lỗi khi xử lý file CSV.');
     }
 });
 
-// 7. GỬI LỜI NHẮC
+// --- 7. GỬI LỜI NHẮC ---
 router.post('/:id/notify', verifyToken, async (req, res) => {
     try {
-        const { message } = req.body;
+        const { message } = req.body || {};
         const customer = await Customer.findByIdAndUpdate(req.params.id, { admin_message: message }, { new: true });
-        if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
-        res.status(200).json({ message: "Đã gửi thông báo đến khách hàng!" });
+        if (!customer) return res.status(404).json({ error: 'Không tìm thấy hội viên.' });
+        res.status(200).json({ message: 'Đã gửi thông báo đến hội viên!' });
     } catch (error) {
-        res.status(500).json({ error: "Lỗi khi gửi thông báo." });
+        sendError(res, error, 'Lỗi server khi gửi thông báo.');
     }
 });
 

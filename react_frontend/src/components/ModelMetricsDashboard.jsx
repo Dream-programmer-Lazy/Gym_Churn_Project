@@ -46,7 +46,7 @@ export default function ModelMetricsDashboard() {
         </div>
         <div>
           <h2 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold', color: '#0f172a' }}>Hiệu Suất Mô Hình Machine Learning</h2>
-          <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#64748b' }}>Đánh giá dựa trên tập dữ liệu thử nghiệm (1200 mẫu giả lập)[cite: 17, 18]</p>
+                    <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#64748b' }}>Đánh giá trên tập kiểm thử 1.200 hội viên (30% dữ liệu giả lập thị trường Việt Nam, tách ngẫu nhiên có phân tầng)</p>
         </div>
       </div>
 
@@ -58,7 +58,7 @@ export default function ModelMetricsDashboard() {
             <h3 style={{ margin: 0, fontSize: '14px', color: '#64748b', textTransform: 'uppercase', fontWeight: 'bold' }}>Thuật toán khuyên dùng</h3>
           </div>
           <h2 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold', color: '#0f172a' }}>Logistic Regression</h2>
-          <p style={{ margin: '8px 0 0 0', fontSize: '13px', color: '#64748b', lineHeight: '1.5' }}>Được chọn làm thuật toán mặc định vì tốc độ phản hồi nhanh và khả năng lý giải (Explainability) tốt hơn trong bài toán Y tế/Sức khỏe.</p>
+                    <p style={{ margin: '8px 0 0 0', fontSize: '13px', color: '#64748b', lineHeight: '1.5' }}>Được chọn làm mặc định vì giải thích được lý do rủi ro cho từng hội viên, giúp chủ phòng tập biết nên chăm sóc ai và bằng cách nào. Random Forest phát hiện được nhiều hội viên sắp rời bỏ hơn (F1 cao hơn) nên phù hợp khi cần rà soát rộng.</p>
         </div>
 
         <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>

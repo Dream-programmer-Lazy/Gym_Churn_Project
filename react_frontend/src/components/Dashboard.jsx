@@ -1,7 +1,24 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import toast from 'react-hot-toast';
 import { PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from 'recharts';
-import { Users, AlertTriangle, ShieldCheck, Calendar, Download, Info } from 'lucide-react';
+import { CalendarRange, Download } from 'lucide-react';
+
+const COLORS = { high: '#e11d48', mid: '#f59e0b', low: '#10b981', bar: '#18181b' };
+
+// Tooltip dùng chung cho cả 2 biểu đồ
+function ChartTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0];
+  return (
+    <div className="ad-tooltip">
+      <div style={{ opacity: 0.7 }}>{label || p.name}</div>
+      <b className="ad-num">{Number(p.value).toLocaleString('vi-VN')}</b> hội viên
+    </div>
+  );
+}
+
+const pct = (part, total) => (total ? ((part / total) * 100).toFixed(1) : '0.0');
 
 export default function Dashboard({ refreshFlag, onCardClick, activeFilter, dateFilter, setDateFilter }) {
   const [stats, setStats] = useState({ total: 0, highRisk: 0, safe: 0, mediumRisk: 0, riskData: [], contractData: [] });
@@ -13,7 +30,7 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
       try {
         const response = await axios.get('http://localhost:3001/api/customers');
         let customers = response.data;
-        
+
         if (dateFilter === '30days') {
           const thirtyDaysAgo = new Date();
           thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -21,7 +38,7 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
         }
 
         if (isMounted) {
-          setRawCustomers(customers); 
+          setRawCustomers(customers);
           let high = 0, medium = 0, low = 0;
           let month1 = 0, month6 = 0, month12 = 0;
 
@@ -38,14 +55,14 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
           setStats({
             total: customers.length, highRisk: high, safe: low, mediumRisk: medium,
             riskData: [
-              { name: 'Nguy cơ cao', value: high, color: '#ef4444' },
-              { name: 'Nguy cơ trung bình', value: medium, color: '#94a3b8' },
-              { name: 'Nguy cơ thấp', value: low, color: '#22c55e' }
+              { key: 'Cao', name: 'Nguy cơ cao', value: high, color: COLORS.high },
+              { key: 'Trung bình', name: 'Nguy cơ trung bình', value: medium, color: COLORS.mid },
+              { key: 'Thấp', name: 'Nguy cơ thấp', value: low, color: COLORS.low }
             ],
             contractData: [
-              { name: 'Gói 1 Tháng', count: month1 },
-              { name: 'Gói 6 Tháng', count: month6 },
-              { name: 'Gói 12 Tháng', count: month12 }
+              { name: 'Gói 1 tháng', count: month1 },
+              { name: 'Gói 6 tháng', count: month6 },
+              { name: 'Gói 12 tháng', count: month12 }
             ]
           });
         }
@@ -59,8 +76,8 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
   }, [refreshFlag, dateFilter]);
 
   const handleExportCSV = () => {
-    if (rawCustomers.length === 0) return alert("Không có dữ liệu để xuất!");
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFF"; 
+    if (rawCustomers.length === 0) return toast.error("Không có dữ liệu để xuất báo cáo.");
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
     csvContent += "Họ tên,SĐT,Tuổi,Gói tập (tháng),Tần suất tập/tuần,Thời gian gắn bó,Xác suất rời bỏ (%),Mức độ rủi ro,Mô hình AI,Trạng thái\n";
     rawCustomers.forEach(cus => {
       const row = [`"${cus.fullName}"`, `"${cus.actualPhoneNumber || ''}"`, cus.Age, cus.Contract_period, cus.Avg_class_frequency_current_month, cus.Lifetime, cus.prediction?.probability_percent || 0, `"${cus.prediction?.risk_level || 'Chưa phân tích'}"`, `"${cus.prediction?.model_used || 'Chưa xác định'}"`, `"${cus.status || 'Đang hoạt động'}"`];
@@ -73,94 +90,128 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    toast.success(`Đã xuất báo cáo ${rawCustomers.length} hội viên.`);
   };
 
-  const highRiskPercent = stats.total ? ((stats.highRisk / stats.total) * 100).toFixed(1) : 0;
-  const safePercent = stats.total ? ((stats.safe / stats.total) * 100).toFixed(1) : 0;
+  const kpis = [
+    { key: 'All', tone: 'tone-all', label: 'Tổng hội viên', value: stats.total, foot: dateFilter === '30days' ? 'Đăng ký trong 30 ngày qua' : 'Toàn bộ dữ liệu' },
+    { key: 'Cao', tone: 'tone-high', label: 'Nguy cơ cao', value: stats.highRisk, foot: <><b>{pct(stats.highRisk, stats.total)}%</b> cần can thiệp ngay</> },
+    { key: 'Trung bình', tone: 'tone-mid', label: 'Nguy cơ trung bình', value: stats.mediumRisk, foot: <><b>{pct(stats.mediumRisk, stats.total)}%</b> nên theo dõi</> },
+    { key: 'Thấp', tone: 'tone-low', label: 'An toàn', value: stats.safe, foot: <><b>{pct(stats.safe, stats.total)}%</b> tương tác ổn định</> },
+  ];
+
+  const is30 = dateFilter === '30days';
 
   return (
-    <div style={{ marginBottom: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', fontSize: '13px', color: '#64748b' }}>
-        <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><div style={{width: '8px', height: '8px', backgroundColor: '#22c55e', borderRadius: '50%'}}></div> Hệ thống Quản lý Khách hàng</span>
+    <>
+      {/* ---------- Tiêu đề trang + hành động ---------- */}
+      <div className="ad-page-head">
+        <div>
+          <h1 className="ad-h1">Tổng quan rủi ro rời bỏ</h1>
+          <p className="ad-sub">Bấm vào từng nhóm rủi ro để lọc danh sách hội viên bên dưới.</p>
         </div>
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button onClick={() => setDateFilter(dateFilter === '30days' ? 'all' : '30days')} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', backgroundColor: dateFilter === '30days' ? '#eff6ff' : 'white', border: dateFilter === '30days' ? '1px solid #3b82f6' : '1px solid #e2e8f0', borderRadius: '6px', cursor: 'pointer', color: dateFilter === '30days' ? '#3b82f6' : '#334155', fontWeight: dateFilter === '30days' ? 'bold' : 'normal' }}>
-            <Calendar size={14} /> {dateFilter === '30days' ? 'Bỏ lọc 30 ngày' : '30 ngày qua'}
+        <div className="ad-actions">
+          <button className={`ad-btn ${is30 ? 'is-on' : ''}`} aria-pressed={is30} onClick={() => setDateFilter(is30 ? 'all' : '30days')}>
+            <CalendarRange size={15} /> {is30 ? 'Đang xem 30 ngày qua' : '30 ngày qua'}
           </button>
-          <button onClick={handleExportCSV} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '6px', cursor: 'pointer', color: '#334155' }}>
-            <Download size={14} /> Xuất báo cáo
+          <button className="ad-btn is-primary" onClick={handleExportCSV}>
+            <Download size={15} /> Xuất báo cáo
           </button>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px', marginBottom: '24px' }}>
-        <div onClick={() => onCardClick('All')} style={{ backgroundColor: activeFilter === 'All' ? '#eff6ff' : 'white', padding: '24px', borderRadius: '12px', borderTop: '4px solid #3b82f6', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div><p style={{ margin: '0 0 8px 0', fontSize: '13px', fontWeight: 'bold', color: '#64748b', textTransform: 'uppercase' }}>Tổng Khách Hàng</p><h2 style={{ margin: 0, fontSize: '32px', fontWeight: 'bold', color: '#0f172a' }}>{stats.total.toLocaleString()}</h2></div>
-            <div style={{ backgroundColor: '#eff6ff', padding: '8px', borderRadius: '8px' }}><Users size={20} color="#3b82f6" /></div>
-          </div>
+      {/* ---------- Dải KPI + phổ rủi ro ---------- */}
+      <section className="ad-panel ad-overview" aria-label="Chỉ số tổng quan">
+        <div className="ad-kpis">
+          {kpis.map(k => (
+            <button key={k.key} className={`ad-kpi ${k.tone}`} aria-pressed={activeFilter === k.key} onClick={() => onCardClick(k.key)}>
+              <div className="ad-kpi-label"><span className="ad-kpi-swatch" />{k.label}</div>
+              <div className="ad-kpi-value ad-num">{k.value.toLocaleString('vi-VN')}</div>
+              <div className="ad-kpi-foot">{k.foot}</div>
+            </button>
+          ))}
         </div>
 
-        <div onClick={() => onCardClick('Cao')} style={{ backgroundColor: activeFilter === 'Cao' ? '#fef2f2' : 'white', padding: '24px', borderRadius: '12px', borderTop: '4px solid #ef4444', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div><p style={{ margin: '0 0 8px 0', fontSize: '13px', fontWeight: 'bold', color: '#64748b', textTransform: 'uppercase' }}>Nguy Cơ Rời Bỏ Cao</p><h2 style={{ margin: 0, fontSize: '32px', fontWeight: 'bold', color: '#ef4444' }}>{stats.highRisk.toLocaleString()}</h2></div>
-            <div style={{ backgroundColor: '#fef2f2', padding: '8px', borderRadius: '8px' }}><AlertTriangle size={20} color="#ef4444" /></div>
+        <div className="ad-spectrum">
+          <div className="ad-spectrum-bar" role="group" aria-label="Phân bố rủi ro">
+            {stats.total > 0 && stats.riskData.filter(d => d.value > 0).map(d => (
+              <button
+                key={d.key}
+                className="ad-spectrum-seg"
+                style={{ flexGrow: d.value, background: d.color }}
+                title={`${d.name}: ${d.value} (${pct(d.value, stats.total)}%)`}
+                aria-label={`Lọc ${d.name}`}
+                onClick={() => onCardClick(d.key)}
+              />
+            ))}
           </div>
-          <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}><span style={{ backgroundColor: '#fef2f2', color: '#991b1b', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>{highRiskPercent}% tổng số</span><span style={{ color: '#ef4444' }}>Cần can thiệp ngay</span></div>
+          <div className="ad-spectrum-legend">
+            <span>Rủi ro cao</span>
+            <span>An toàn</span>
+          </div>
         </div>
+      </section>
 
-        <div onClick={() => onCardClick('Thấp')} style={{ backgroundColor: activeFilter === 'Thấp' ? '#f0fdf4' : 'white', padding: '24px', borderRadius: '12px', borderTop: '4px solid #22c55e', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div><p style={{ margin: '0 0 8px 0', fontSize: '13px', fontWeight: 'bold', color: '#64748b', textTransform: 'uppercase' }}>Khách Hàng An Toàn</p><h2 style={{ margin: 0, fontSize: '32px', fontWeight: 'bold', color: '#0f172a' }}>{stats.safe.toLocaleString()}</h2></div>
-            <div style={{ backgroundColor: '#f0fdf4', padding: '8px', borderRadius: '8px' }}><ShieldCheck size={20} color="#22c55e" /></div>
-          </div>
-          <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}><span style={{ backgroundColor: '#f1f5f9', color: '#334155', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>{safePercent}% tỷ lệ an toàn</span><span style={{ color: '#64748b' }}>Tương tác ổn định</span></div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '24px' }}>
-        <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <div><h3 style={{ margin: '0 0 4px 0', fontSize: '16px', fontWeight: 'bold', color: '#0f172a' }}>Tỉ lệ nguy cơ rời bỏ</h3><p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>Phân loại bởi mô hình AI</p></div>
-            <Info size={16} color="#cbd5e1" />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', marginTop: '20px' }}>
-            <div style={{ width: '160px', height: '160px', position: 'relative' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={stats.riskData} cx="50%" cy="50%" innerRadius={50} outerRadius={70} dataKey="value" stroke="none">
-                    {stats.riskData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}><div style={{ fontSize: '20px', fontWeight: 'bold', color: '#0f172a' }}>{stats.total}</div></div>
-            </div>
-            <div style={{ flex: 1, paddingLeft: '15px', display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '13px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><div style={{width:'8px', height:'8px', backgroundColor:'#ef4444', borderRadius:'50%'}}></div>Nguy cơ cao <strong style={{marginLeft:'auto'}}>{stats.highRisk}</strong></div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><div style={{width:'8px', height:'8px', backgroundColor:'#22c55e', borderRadius:'50%'}}></div>Nguy cơ thấp <strong style={{marginLeft:'auto'}}>{stats.safe}</strong></div>
+      {/* ---------- Biểu đồ ---------- */}
+      <div className="ad-charts">
+        <section className="ad-panel">
+          <div className="ad-panel-head">
+            <div>
+              <h3 className="ad-h3">Tỷ lệ nguy cơ rời bỏ</h3>
+              <p className="ad-h3-sub">Phân loại bởi mô hình AI</p>
             </div>
           </div>
-        </div>
+          <div className="ad-chart-body">
+            <div className="ad-donut-wrap">
+              <div className="ad-donut">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={stats.riskData} cx="50%" cy="50%" innerRadius={64} outerRadius={90} paddingAngle={stats.total ? 2 : 0} cornerRadius={4} dataKey="value" stroke="none">
+                      {stats.riskData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                    </Pie>
+                    <Tooltip content={<ChartTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="ad-donut-center">
+                  <div className="ad-donut-total ad-num">{stats.total.toLocaleString('vi-VN')}</div>
+                  <div className="ad-donut-cap">hội viên</div>
+                </div>
+              </div>
 
-        <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <div><h3 style={{ margin: '0 0 4px 0', fontSize: '16px', fontWeight: 'bold', color: '#0f172a' }}>Phân bố thời hạn hợp đồng</h3><p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>Tương quan số lượng hội viên theo gói thời hạn</p></div>
+              <div className="ad-legend">
+                {stats.riskData.map(d => (
+                  <button key={d.key} className="ad-legend-row" aria-pressed={activeFilter === d.key} onClick={() => onCardClick(d.key)}>
+                    <span className="ad-legend-dot" style={{ background: d.color }} />
+                    <span>{d.name}</span>
+                    <span className="ad-legend-val ad-num">{d.value.toLocaleString('vi-VN')}</span>
+                    <span className="ad-legend-pct ad-num">{pct(d.value, stats.total)}%</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{ height: '180px' }}>
+        </section>
+
+        <section className="ad-panel">
+          <div className="ad-panel-head">
+            <div>
+              <h3 className="ad-h3">Phân bố thời hạn hợp đồng</h3>
+              <p className="ad-h3-sub">Số lượng hội viên theo từng gói</p>
+            </div>
+          </div>
+          <div className="ad-chart-body" style={{ height: 290 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.contractData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }} barSize={40}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} dy={10} />
-                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />
-                <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'}} />
-                <Bar dataKey="count" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+              <BarChart data={stats.contractData} margin={{ top: 16, right: 8, left: -16, bottom: 0 }} barSize={56}>
+                <CartesianGrid vertical={false} stroke="#f1f1f3" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} dy={8} />
+                <YAxis axisLine={false} tickLine={false} allowDecimals={false} tick={{ fontSize: 12, fill: '#a1a1aa' }} />
+                <Tooltip cursor={{ fill: '#f4f4f5', radius: 6 }} content={<ChartTooltip />} />
+                <Bar dataKey="count" fill={COLORS.bar} radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </section>
       </div>
-    </div>
+    </>
   );
 }

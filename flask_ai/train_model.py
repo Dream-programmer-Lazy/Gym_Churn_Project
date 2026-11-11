@@ -1,66 +1,194 @@
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+"""
+HUẤN LUYỆN 2 MÔ HÌNH THEO THỊ TRƯỜNG
+------------------------------------
+Tạo ra:
+    vn_model.pkl       <- huấn luyện từ gym_churn_vn_synthetic.csv (tiền: nghìn VNĐ)
+    global_model.pkl   <- huấn luyện từ gym_churn_us.csv           (tiền: USD)
+    model_metrics_vn.json / model_metrics_global.json  (bản dễ đọc của chỉ số đánh giá)
+
+Mỗi file .pkl là một "gói" (dict) chứa:
+    - models:   {'logistic': Pipeline(StandardScaler + LogisticRegression),
+                 'random_forest': RandomForestClassifier}
+    - metrics:  Accuracy / Precision / Recall / F1 / Confusion matrix trên tập test
+    - profile:  min, max, p05, p95, trung vị, mode của từng biến
+                (dùng để cảnh báo giá trị ngoài vùng huấn luyện + điền sẵn nút Có/Không)
+    - explain:  hệ số Logistic để giải thích "3 lý do chính"
+    - thresholds: ngưỡng Cao / Trung bình
+
+Cách chạy (đứng trong thư mục flask_ai):
+    python train_model.py
+"""
+
+import hashlib
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
 import joblib
+import numpy as np
+import pandas as pd
+import sklearn
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
-print("--- HỆ THỐNG HUẤN LUYỆN & SO SÁNH MÔ HÌNH AI ---")
+BASE_DIR = Path(__file__).resolve().parent
 
-# 1. Đọc và tiền xử lý dữ liệu
-print("BƯỚC 1: Đọc dataset thực tế (gym_churn_us.csv)...")
-df = pd.read_csv('gym_churn_us.csv')
-df = df.dropna()
+# 13 biến độc lập — ĐÚNG THỨ TỰ này được dùng ở cả train và predict
+FEATURES = [
+    'gender', 'Near_Location', 'Partner', 'Promo_friends', 'Phone',
+    'Contract_period', 'Group_visits', 'Age',
+    'Avg_additional_charges_total', 'Month_to_end_contract',
+    'Lifetime', 'Avg_class_frequency_total', 'Avg_class_frequency_current_month',
+]
+BINARY_FEATURES = ['gender', 'Near_Location', 'Partner', 'Promo_friends', 'Phone', 'Group_visits']
+TARGET = 'Churn'
 
-X = df.drop('Churn', axis=1)
-y = df['Churn']
+REGIONS = {
+    'vn': {
+        'label_vi': 'Việt Nam',
+        'data_file': 'gym_churn_vn_synthetic.csv',
+        'currency': 'nghìn VNĐ',
+        'output': 'vn_model.pkl',
+    },
+    'global': {
+        'label_vi': 'Quốc tế',
+        'data_file': 'gym_churn_us.csv',
+        'currency': 'USD',
+        'output': 'global_model.pkl',
+    },
+}
 
-# 2. Phân tách dữ liệu
-print("BƯỚC 2: Phân tách tập Train (70%) và tập Test (30%)...")
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+THRESHOLDS = {'high': 70.0, 'medium': 50.0}   # % : >=70 Cao, >50 Trung bình, còn lại Thấp
+TEST_SIZE = 0.3
+SEED = 42
 
-# 3. Khởi tạo 2 mô hình theo yêu cầu
-print("BƯỚC 3: Đang huấn luyện Logistic Regression và Random Forest...")
-pipeline_lr = Pipeline([
-    ('scaler', StandardScaler()), 
-    ('model', LogisticRegression(random_state=42, max_iter=1000))
-])
 
-pipeline_rf = Pipeline([
-    ('scaler', StandardScaler()), 
-    ('model', RandomForestClassifier(n_estimators=100, random_state=42))
-])
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
 
-# Huấn luyện cả 2 mô hình
-pipeline_lr.fit(X_train, y_train)
-pipeline_rf.fit(X_train, y_train)
 
-# 4. Đánh giá và so sánh
-y_pred_lr = pipeline_lr.predict(X_test)
-y_pred_rf = pipeline_rf.predict(X_test)
+def evaluate(model, X_test, y_test) -> dict:
+    y_pred = model.predict(X_test)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+    return {
+        'accuracy': float(accuracy_score(y_test, y_pred)),
+        'precision': float(precision_score(y_test, y_pred, zero_division=0)),
+        'recall': float(recall_score(y_test, y_pred, zero_division=0)),
+        'f1': float(f1_score(y_test, y_pred, zero_division=0)),
+        'confusion_matrix': {'TN': int(tn), 'FP': int(fp), 'FN': int(fn), 'TP': int(tp)},
+    }
 
-def print_metrics(name, y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred)
-    rec = recall_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred)
-    print(f"[{name}] Accuracy: {acc*100:.2f}% | Precision: {prec*100:.2f}% | Recall: {rec*100:.2f}% | F1: {f1*100:.2f}%")
-    return acc
 
-print("\nBƯỚC 4: BẢNG SO SÁNH KẾT QUẢ CÁC MÔ HÌNH TRÊN TẬP TEST")
-acc_lr = print_metrics("Logistic Regression", y_test, y_pred_lr)
-acc_rf = print_metrics("Random Forest      ", y_test, y_pred_rf)
+def build_profile(X_train: pd.DataFrame) -> dict:
+    """Thống kê từng biến trên TẬP TRAIN (không dùng tập test để tránh rò rỉ dữ liệu)."""
+    profile = {}
+    for col in FEATURES:
+        s = X_train[col]
+        info = {
+            'min': float(s.min()), 'max': float(s.max()),
+            'p05': float(s.quantile(0.05)), 'p95': float(s.quantile(0.95)),
+            'median': float(s.median()), 'mean': float(s.mean()), 'std': float(s.std()),
+        }
+        if col in BINARY_FEATURES:
+            info['mode'] = int(s.mode().iloc[0])          # giá trị điền sẵn cho nút Có/Không
+            info['share_1'] = float(s.mean())             # tỷ lệ = 1
+        profile[col] = info
+    return profile
 
-# 5. Chọn mô hình tốt nhất và lưu
-print("\nBƯỚC 5: Lựa chọn và Đóng gói (Model Serialization)...")
-if acc_lr >= acc_rf:
-    best_model = pipeline_lr
-    print("-> Lựa chọn: LOGISTIC REGRESSION (Vì có Accuracy cao hơn hoặc bằng)")
-else:
-    best_model = pipeline_rf
-    print("-> Lựa chọn: RANDOM FOREST (Vì có Accuracy cao hơn)")
 
-joblib.dump(best_model, 'gym_churn_model.joblib')
-print("✅ HOÀN TẤT! File 'gym_churn_model.joblib' chứa mô hình tối ưu nhất đã sẵn sàng phục vụ Flask API.")
+def train_region(key: str, cfg: dict) -> dict:
+    data_path = BASE_DIR / cfg['data_file']
+    if not data_path.exists():
+        sys.exit(f"❌ Không tìm thấy {data_path.name} trong thư mục flask_ai/")
+
+    print(f"\n=== [{cfg['label_vi']}] Đọc {data_path.name} ===")
+    df = pd.read_csv(data_path, encoding='utf-8-sig')      # utf-8-sig: bỏ ký tự BOM ở đầu file VN
+    missing = [c for c in FEATURES + [TARGET] if c not in df.columns]
+    if missing:
+        sys.exit(f"❌ File {data_path.name} thiếu cột: {missing}")
+
+    df = df[FEATURES + [TARGET]].dropna()
+    X, y = df[FEATURES], df[TARGET].astype(int)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=SEED, stratify=y)
+    print(f"Train: {len(X_train)} dòng | Test: {len(X_test)} dòng | Tỷ lệ rời bỏ: {y.mean():.1%}")
+
+    logistic = Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', LogisticRegression(max_iter=1000, random_state=SEED)),
+    ])
+    random_forest = RandomForestClassifier(n_estimators=100, random_state=SEED, n_jobs=-1)
+
+    logistic.fit(X_train, y_train)
+    random_forest.fit(X_train, y_train)
+
+    metrics = {
+        'logistic': evaluate(logistic, X_test, y_test),
+        'random_forest': evaluate(random_forest, X_test, y_test),
+        'majority_baseline_accuracy': float(max(y_test.mean(), 1 - y_test.mean())),
+        'train_rows': int(len(X_train)),
+        'test_rows': int(len(X_test)),
+        'decision_rule': 'p(class 1) > 0.5',
+    }
+    for name in ('logistic', 'random_forest'):
+        m = metrics[name]
+        print(f"  {name:14s} Acc {m['accuracy']:.2%} | Prec {m['precision']:.2%} | "
+              f"Recall {m['recall']:.2%} | F1 {m['f1']:.2%}")
+    print(f"  (Mốc so sánh: đoán 'không ai rời bỏ' đạt {metrics['majority_baseline_accuracy']:.2%})")
+
+    scaler = logistic.named_steps['scaler']
+    lr = logistic.named_steps['model']
+    explain = {
+        'method': 'logistic_contribution',   # đóng góp = hệ số * (x - mean) / std
+        'mean': [float(v) for v in scaler.mean_],
+        'scale': [float(v) for v in scaler.scale_],
+        'coef': [float(v) for v in lr.coef_[0]],
+        'intercept': float(lr.intercept_[0]),
+    }
+
+    bundle = {
+        'schema_version': 'gym-region-model-v1',
+        'region': key,
+        'label_vi': cfg['label_vi'],
+        'currency': cfg['currency'],
+        'data_file': cfg['data_file'],
+        'data_sha256': sha256_of(data_path),
+        'data_kind': 'synthetic' if 'synthetic' in cfg['data_file'] else 'public_dataset',
+        'trained_at_utc': datetime.now(timezone.utc).isoformat(),
+        'versions': {
+            'python': sys.version.split()[0], 'scikit_learn': sklearn.__version__,
+            'pandas': pd.__version__, 'numpy': np.__version__, 'joblib': joblib.__version__,
+        },
+        'features': FEATURES,
+        'binary_features': BINARY_FEATURES,
+        'contract_values': sorted(int(v) for v in X_train['Contract_period'].unique()),
+        'thresholds': THRESHOLDS,
+        'profile': build_profile(X_train),
+        'explain': explain,
+        'metrics': metrics,
+        'models': {'logistic': logistic, 'random_forest': random_forest},
+    }
+
+    out = BASE_DIR / cfg['output']
+    joblib.dump(bundle, out)
+    readable = {k: v for k, v in bundle.items() if k != 'models'}
+    (BASE_DIR / f"model_metrics_{key}.json").write_text(
+        json.dumps(readable, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f"✅ Đã lưu {out.name} và model_metrics_{key}.json")
+    return bundle
+
+
+if __name__ == '__main__':
+    print("--- HUẤN LUYỆN MÔ HÌNH DỰ BÁO RỜI BỎ THEO THỊ TRƯỜNG ---")
+    for region_key, region_cfg in REGIONS.items():
+        train_region(region_key, region_cfg)
+    print("\nHoàn tất. Khởi động lại app.py để nạp mô hình mới.")

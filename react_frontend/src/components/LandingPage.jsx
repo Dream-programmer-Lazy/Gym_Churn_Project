@@ -67,7 +67,14 @@ export default function LandingPage({ onNavigate }) {
           style={{ backgroundColor: '#ff3d00', color: '#fff', border: 'none', padding: '16px 45px', fontSize: '18px', fontWeight: 'bold', borderRadius: '30px', cursor: 'pointer', boxShadow: '0 4px 20px rgba(255, 61, 0, 0.5)', transition: '0.3s' }}
           onMouseEnter={(e)=>e.target.style.transform='scale(1.05)'}
           onMouseLeave={(e)=>e.target.style.transform='scale(1)'}>
-          ĐĂNG KÝ GÓI TẬP NGAY
+           ĐĂNG KÝ GÓI TẬP NGAY
+        </button>
+        <button
+          onClick={() => onNavigate('predict')}
+          style={{ marginTop: '18px', backgroundColor: 'transparent', color: '#fff', border: '1px solid rgba(255,255,255,0.45)', padding: '12px 32px', fontSize: '15px', fontWeight: 'bold', borderRadius: '30px', cursor: 'pointer', transition: '0.3s' }}
+          onMouseEnter={(e)=>{e.currentTarget.style.borderColor='#ff3d00'; e.currentTarget.style.color='#ff3d00';}}
+          onMouseLeave={(e)=>{e.currentTarget.style.borderColor='rgba(255,255,255,0.45)'; e.currentTarget.style.color='#fff';}}>
+          DÙNG THỬ AI DỰ BÁO RỜI BỎ
         </button>
       </section>
 

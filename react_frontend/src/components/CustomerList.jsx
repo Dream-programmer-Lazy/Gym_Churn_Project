@@ -1,13 +1,29 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { UploadCloud, Edit2, Trash2, Bell, CheckCircle, Cpu } from 'lucide-react';
+import { CloudUpload, PenLine, Trash2, BellRing, CircleCheck, Cpu, Search, Clock, Inbox, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
+
+const RISK_TABS = [
+  { value: 'All', label: 'Tất cả', tone: 'tone-all' },
+  { value: 'Cao', label: 'Nguy cơ cao', tone: 'tone-high' },
+  { value: 'Trung bình', label: 'Trung bình', tone: 'tone-mid' },
+  { value: 'Thấp', label: 'An toàn', tone: 'tone-low' },
+];
+
+// Cùng ngưỡng với bản cũ: >=70 cao, >50 trung bình, còn lại thấp; chờ duyệt = trung tính
+const toneOf = (cus) => {
+  if (cus.status === 'Chờ duyệt') return 'tone-pend';
+  const p = cus.prediction?.probability_percent || 0;
+  if (p >= 70) return 'tone-high';
+  if (p > 50) return 'tone-mid';
+  return 'tone-low';
+};
 
 export default function CustomerList({ setEditingCustomer, refreshFlag, onSuccess, externalFilter, onFilterChange, dateFilter }) {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  
+
   // Quản lý mô hình AI đang được chọn để dự báo
   const [modelType, setModelType] = useState('logistic');
 
@@ -18,7 +34,13 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
         setCustomers(response.data);
       } catch (error) {
         console.error("Lỗi:", error);
-        toast.error("Không thể tải danh sách khách hàng!"); 
+        // Hết phiên -> App đã báo và chuyển về đăng nhập, không báo lỗi trùng
+        if (!error.sessionExpired) {
+          const msg = error.response
+            ? (error.response.data?.error || `Máy chủ trả lỗi ${error.response.status}.`)
+            : 'Không kết nối được máy chủ Node (cổng 3001). Hãy kiểm tra server đã chạy chưa.';
+          toast.error(`Không thể tải danh sách hội viên: ${msg}`, { id: 'load-customers' });
+        }
       } finally {
         setLoading(false);
       }
@@ -30,7 +52,7 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
     if (window.confirm(`Xác nhận xóa khách hàng "${name}"?`)) {
       try {
         await axios.delete(`http://localhost:3001/api/customers/${id}`);
-        onSuccess(); 
+        onSuccess();
         toast.success(`Đã xóa khách hàng ${name} thành công!`);
       } catch (error) {
         console.error("Lỗi khi xóa:", error);
@@ -56,10 +78,10 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
   const handleApprove = async (id, name) => {
     const modelName = modelType === 'logistic' ? 'Logistic Regression' : 'Random Forest';
     if (window.confirm(`Xác nhận duyệt hợp đồng cho "${name}" và chạy phân tích AI bằng thuật toán [${modelName}]?`)) {
-      const loadingToast = toast.loading(`Đang phân tích rủi ro bằng ${modelName}...`); 
+      const loadingToast = toast.loading(`Đang phân tích rủi ro bằng ${modelName}...`);
       try {
         await axios.put(`http://localhost:3001/api/customers/${id}/approve`, { model_type: modelType });
-        onSuccess(); 
+        onSuccess();
         toast.success(`Đã duyệt và đánh giá rủi ro thành công!`, { id: loadingToast });
       } catch (error) {
         console.error("Lỗi khi duyệt:", error);
@@ -79,11 +101,11 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
     const modelName = modelType === 'logistic' ? 'Logistic Regression' : 'Random Forest';
     const confirmUpload = window.confirm(`Bạn có chắc chắn muốn tải lên file "${file.name}" để hệ thống AI tự động phân tích rủi ro bằng [${modelName}] không?`);
     if (!confirmUpload) {
-        e.target.value = null; 
-        return;
+      e.target.value = null;
+      return;
     }
 
-    const loadingToast = toast.loading(`Đang xử lý file CSV và chạy AI ${modelName}...`); 
+    const loadingToast = toast.loading(`Đang xử lý file CSV và chạy AI ${modelName}...`);
 
     try {
       setLoading(true);
@@ -94,18 +116,24 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
       onSuccess();
     } catch (error) {
       console.error("Lỗi tải lên CSV:", error);
-      toast.error(error.response?.data?.error || 'Lỗi khi tải lên file CSV!', { id: loadingToast }); 
+      toast.error(error.response?.data?.error || 'Lỗi khi tải lên file CSV!', { id: loadingToast });
     } finally {
       setLoading(false);
       e.target.value = null;
     }
   };
 
+  // Sửa → đẩy dữ liệu lên form và cuộn tới form (hữu ích khi màn hình hẹp, form nằm trên bảng)
+  const handleEdit = (cus) => {
+    setEditingCustomer(cus);
+    document.getElementById('customer-form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const filteredCustomers = customers.filter(cus => {
-    const matchSearch = cus.fullName.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    const matchSearch = cus.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                         (cus.actualPhoneNumber && cus.actualPhoneNumber.includes(searchTerm));
     const matchRisk = externalFilter === 'All' || (cus.prediction?.risk_level === externalFilter);
-    
+
     let matchDate = true;
     if (dateFilter === '30days') {
       const thirtyDaysAgo = new Date();
@@ -116,127 +144,151 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
     return matchSearch && matchRisk && matchDate;
   });
 
-  if (loading) return <p style={{textAlign: 'center', padding: '20px'}}>Đang tải dữ liệu...</p>;
+  const pendingCount = customers.filter(c => c.status === 'Chờ duyệt').length;
+
+  if (loading) {
+    return (
+      <div id="customer-list-section" aria-busy="true">
+        <div className="ad-toolbar"><div className="ad-skel" style={{ width: 180, height: 14 }} /></div>
+        {[0, 1, 2, 3, 4].map(i => (
+          <div className="ad-skel-row" key={i}>
+            <div className="ad-skel" style={{ width: 36, height: 36, borderRadius: '50%' }} />
+            <div className="ad-skel" style={{ width: '22%' }} />
+            <div className="ad-skel" style={{ width: '12%' }} />
+            <div className="ad-skel" style={{ width: '18%', marginLeft: 'auto' }} />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div id="customer-list-section">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap', gap: '15px' }}>
-        
-        <div style={{ display: 'flex', gap: '15px' }}>
-          <input type="text" placeholder="🔍 Tìm tên hoặc SĐT..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ padding: '10px 15px', borderRadius: '8px', border: '1px solid #e2e8f0', minWidth: '250px', backgroundColor: '#f8fafc', outline: 'none' }} />
-          <select value={externalFilter} onChange={(e) => onFilterChange(e.target.value)} style={{ padding: '10px 15px', borderRadius: '8px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', outline: 'none', fontWeight: '500', color: '#334155' }}>
-            <option value="All">Tất cả rủi ro</option>
-            <option value="Cao">Nguy cơ CAO</option>
-            <option value="Trung bình">Nguy cơ Trung bình</option>
-            <option value="Thấp">An toàn</option>
-          </select>
-        </div>
-
-        <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', backgroundColor: '#eff6ff', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
-            <Cpu size={18} color="#3b82f6" />
-            <select value={modelType} onChange={(e) => setModelType(e.target.value)} style={{ backgroundColor: 'transparent', border: 'none', outline: 'none', fontWeight: 'bold', color: '#1e40af', cursor: 'pointer', fontSize: '13px' }}>
-              <option value="logistic">AI: Logistic Regression</option>
-              <option value="random_forest">AI: Random Forest</option>
-            </select>
+      {/* ---------- Toolbar ---------- */}
+      <div className="ad-toolbar">
+        <div className="ad-toolbar-row">
+          <div>
+            <h3 className="ad-h3">Danh sách hội viên <span className="ad-count ad-num">{filteredCustomers.length}/{customers.length}</span></h3>
+            <p className="ad-h3-sub">
+              {pendingCount > 0 ? `${pendingCount} hội viên đang chờ duyệt và chấm điểm rủi ro` : 'Tất cả hội viên đã được chấm điểm rủi ro'}
+            </p>
           </div>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 20px', backgroundColor: 'white', color: '#334155', border: '1px solid #e2e8f0', borderRadius: '8px', cursor: 'pointer', fontWeight: '500', fontSize: '14px', transition: '0.2s' }}>
-            <UploadCloud size={16} /> Upload CSV
-            <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
-          </label>
+          <div className="ad-actions">
+            <label className="ad-model-pick" title="Mô hình dùng khi duyệt và khi tải CSV">
+              <Cpu size={15} />
+              <select className="ad-select" value={modelType} onChange={(e) => setModelType(e.target.value)} aria-label="Mô hình AI">
+                <option value="logistic">Logistic Regression</option>
+                <option value="random_forest">Random Forest</option>
+              </select>
+            </label>
+
+            <label className="ad-btn" style={{ cursor: 'pointer' }}>
+              <CloudUpload size={15} /> Tải lên CSV
+              <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
+            </label>
+          </div>
+        </div>
+
+        <div className="ad-toolbar-row">
+          <div className="ad-search">
+            <Search size={15} />
+            <input className="ad-input" type="text" placeholder="Tìm theo tên hoặc số điện thoại" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} aria-label="Tìm hội viên" />
+          </div>
+
+          <div className="ad-tabs" role="group" aria-label="Lọc theo mức rủi ro">
+            {RISK_TABS.map(t => (
+              <button key={t.value} className={`ad-tab ${t.tone}`} aria-pressed={externalFilter === t.value} onClick={() => onFilterChange(t.value)}>
+                {t.value !== 'All' && <span className="ad-tab-dot" />}
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
-      
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+
+      {/* ---------- Bảng (cuộn dọc, header dính) ---------- */}
+      <div className="ad-table-scroll">
+        <table className="ad-table">
           <thead>
-            <tr style={{ color: '#64748b', textTransform: 'uppercase', fontSize: '11px', fontWeight: 'bold', borderBottom: '1px solid #f1f5f9' }}>
-              <th style={{ padding: '16px 20px' }}>Hội viên</th>
-              <th style={{ padding: '16px 20px' }}>Gói tập</th>
-              <th style={{ padding: '16px 20px' }}>Tần suất tháng</th>
-              <th style={{ padding: '16px 20px' }}>Xác suất rời bỏ</th>
-              <th style={{ padding: '16px 20px' }}>Mức độ rủi ro</th>
-              <th style={{ padding: '16px 20px', textAlign: 'center' }}>Hành động</th>
+            <tr>
+              <th>Hội viên</th>
+              <th>Gói tập & tần suất</th>
+              <th>Rủi ro rời bỏ</th>
+              <th>Hành động</th>
             </tr>
           </thead>
           <tbody>
             {filteredCustomers.length === 0 ? (
-              <tr><td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: '#64748b' }}>Không tìm thấy khách hàng.</td></tr>
+              <tr>
+                <td colSpan="4" style={{ padding: 0 }}>
+                  <div className="ad-empty">
+                    <div className="ad-empty-icon"><Inbox size={20} /></div>
+                    <div className="ad-empty-title">Không có hội viên phù hợp</div>
+                    <div>Thử đổi từ khóa tìm kiếm hoặc chọn “Tất cả” để bỏ lọc.</div>
+                  </div>
+                </td>
+              </tr>
             ) : (
               filteredCustomers.map((cus) => {
                 const riskPrc = cus.prediction?.probability_percent || 0;
-                let barColor = '#22c55e'; 
-                let badgeColor = '#dcfce7', badgeText = '#166534';
-                if (riskPrc >= 70) { barColor = '#ef4444'; badgeColor = '#fef2f2'; badgeText = '#991b1b'; } 
-                else if (riskPrc > 50) { barColor = '#f59e0b'; badgeColor = '#fef3c7'; badgeText = '#b45309'; } 
-
-                if (cus.status === 'Chờ duyệt') {
-                  barColor = '#cbd5e1'; badgeColor = '#f1f5f9'; badgeText = '#64748b';
-                }
-
-                const initials = cus.fullName.split(' ').map(n=>n[0]).join('').substring(0,3).toUpperCase();
+                const isPending = cus.status === 'Chờ duyệt';
+                const tone = toneOf(cus);
+                const initials = cus.fullName.split(' ').map(n => n[0]).join('').substring(0, 3).toUpperCase();
                 const usedModel = cus.prediction?.model_used === 'Random Forest' ? 'RF' : (cus.prediction?.model_used === 'Logistic Regression' ? 'LR' : '');
+                const needsCare = cus.prediction?.risk_level === 'Cao' || cus.prediction?.risk_level === 'Trung bình';
 
                 return (
-                  <tr key={cus._id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '15px' }}>
-                      <div style={{ width: '35px', height: '35px', borderRadius: '50%', backgroundColor: badgeColor, color: badgeText, display: 'flex', justifyContent: 'center', alignItems: 'center', fontWeight: 'bold', fontSize: '12px' }}>{initials}</div>
-                      <div>
-                        <div style={{ fontWeight: 'bold', color: '#0f172a', fontSize: '14px' }}>{cus.fullName}</div>
-                        <div style={{ color: '#64748b', fontSize: '12px' }}>{cus.actualPhoneNumber || 'Chưa cập nhật'}</div>
+                  <tr key={cus._id} className={isPending ? 'is-pending' : undefined}>
+                    <td>
+                      <div className="ad-member">
+                        <div className={`ad-member-av ${tone}`}>{initials}</div>
+                        <div>
+                          <div className="ad-member-name">{cus.fullName}</div>
+                          <div className="ad-member-phone ad-num">{cus.actualPhoneNumber || 'Chưa cập nhật SĐT'}</div>
+                        </div>
                       </div>
                     </td>
-                    <td style={{ padding: '16px 20px', fontWeight: '500', color: '#334155' }}>
-                      Gói {cus.Contract_period} Tháng
-                      {cus.status === 'Chờ duyệt' && <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '4px' }}>⏳ Đang chờ duyệt</div>}
+
+                    <td>
+                      <div className="ad-cell-strong">Gói {cus.Contract_period} tháng</div>
+                      {isPending
+                        ? <div className="ad-pending-tag"><Clock size={12} /> Đang chờ duyệt</div>
+                        : <div className="ad-cell-sub ad-num">{Number(cus.Avg_class_frequency_current_month || 0).toFixed(2)} buổi/tuần</div>}
                     </td>
-                    {/* KHẮC PHỤC LỖI HIỂN THỊ DÀI: LÀM TRÒN SỐ */}
-                    <td style={{ padding: '16px 20px', fontWeight: '500', color: '#334155' }}>
-                      {Number(cus.Avg_class_frequency_current_month || 0).toFixed(2)} b/tuần
-                    </td>
-                    
-                    <td style={{ padding: '16px 20px' }}>
-                      {cus.status === 'Chờ duyệt' ? (
-                        <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Chờ đánh giá</span>
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <div style={{ width: '80px', height: '6px', backgroundColor: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{ width: `${riskPrc}%`, height: '100%', backgroundColor: barColor }}></div>
-                          </div>
-                          <span style={{ fontWeight: 'bold', color: '#334155' }}>
-                            {riskPrc}% 
-                            {usedModel && <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '4px' }}>[{usedModel}]</span>}
+
+                    <td>
+                      <div className={`ad-risk ${tone}`}>
+                        <div className="ad-risk-top">
+                          <span className="ad-badge">
+                            <span className="ad-badge-dot" />
+                            {isPending ? 'Chưa dự báo' : (cus.prediction?.risk_level || 'Chưa đánh giá')}
                           </span>
+                          {isPending
+                            ? <span className="ad-wait">Chờ đánh giá</span>
+                            : <span className="ad-meter-val ad-num">{riskPrc}%</span>}
+                          {!isPending && usedModel && <span className="ad-model-tag" title={cus.prediction?.model_used}>{usedModel}</span>}
                         </div>
-                      )}
+                        <div className="ad-meter-track"><div className="ad-meter-fill" style={{ width: `${isPending ? 0 : Math.min(riskPrc, 100)}%` }} /></div>
+                      </div>
                     </td>
-                    
-                    <td style={{ padding: '16px 20px' }}>
-                      <span style={{ backgroundColor: badgeColor, color: badgeText, padding: '4px 10px', borderRadius: '20px', fontWeight: 'bold', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
-                        <div style={{width:'6px', height:'6px', borderRadius:'50%', backgroundColor: barColor}}></div> 
-                        {cus.status === 'Chờ duyệt' ? 'Chưa dự báo' : (cus.prediction?.risk_level || 'Chưa đánh giá')}
-                      </span>
-                    </td>
-                    
-                    <td style={{ padding: '16px 20px', textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '15px', color: '#94a3b8' }}>
-                      
-                      {cus.status === 'Chờ duyệt' ? (
-                        <button onClick={() => handleApprove(cus._id, cus.fullName)} style={{ padding: '6px 12px', backgroundColor: '#4caf50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-                          Duyệt
-                        </button>
-                      ) : (
-                        cus.prediction?.risk_level === 'Cao' || cus.prediction?.risk_level === 'Trung bình' ? (
-                          <div onClick={() => handleNotify(cus._id, cus.fullName)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', color: '#ef4444', backgroundColor: '#fef2f2', padding: '4px 8px', borderRadius: '6px' }} title="Gửi nhắc nhở">
-                            <Bell size={16} style={{ marginRight: '4px' }} /> Nhắc nhở
-                          </div>
+
+                    <td>
+                      <div className="ad-row-actions">
+                        {isPending ? (
+                          <button className="ad-btn is-sm is-approve" onClick={() => handleApprove(cus._id, cus.fullName)}>
+                            <ShieldCheck size={14} /> Duyệt
+                          </button>
+                        ) : needsCare ? (
+                          <button className="ad-btn is-sm is-notify" onClick={() => handleNotify(cus._id, cus.fullName)} title="Gửi nhắc nhở">
+                            <BellRing size={14} /> Nhắc nhở
+                          </button>
                         ) : (
-                          <CheckCircle size={18} color="#22c55e" title="Ổn định" />
-                        )
-                      )}
-                      
-                      <Edit2 size={18} style={{ cursor: 'pointer', color: '#3b82f6', marginTop: '2px' }} onClick={() => setEditingCustomer(cus)} title="Sửa" />
-                      <Trash2 size={18} style={{ cursor: 'pointer', color: '#94a3b8', marginTop: '2px' }} onClick={() => handleDelete(cus._id, cus.fullName)} title="Xóa" />
+                          <span className="ad-ok-icon" title="Ổn định" aria-label="Ổn định"><CircleCheck size={17} /></span>
+                        )}
+                        <button className="ad-row-btn" onClick={() => handleEdit(cus)} title="Sửa" aria-label={`Sửa ${cus.fullName}`}><PenLine size={16} /></button>
+                        <button className="ad-row-btn is-danger" onClick={() => handleDelete(cus._id, cus.fullName)} title="Xóa" aria-label={`Xóa ${cus.fullName}`}><Trash2 size={16} /></button>
+                      </div>
                     </td>
                   </tr>
                 );

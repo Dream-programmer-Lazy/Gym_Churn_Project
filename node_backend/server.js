@@ -7,6 +7,7 @@ const clientAuthRoutes = require('./routes/clientAuth'); // Import file mới
 
 // Import bộ định tuyến (Router) khách hàng
 const customerRoutes = require('./routes/customer');
+const predictRoutes = require('./routes/predict'); // Landing Page: dự báo dùng thử, không lưu
 
 const app = express();
 const PORT = 3001;
@@ -26,6 +27,7 @@ mongoose.connect(process.env.MONGODB_URI)
 // Bất kỳ yêu cầu nào bắt đầu bằng /api/customers sẽ được đưa vào customerRoutes xử lý
 app.use('/api/auth', authRoutes);
 app.use('/api/customers', customerRoutes);
+app.use('/api/predict', predictRoutes);
 app.use('/api/client', clientAuthRoutes); // Gắn endpoint cho khách
 app.listen(PORT, () => {
     console.log(`🚀 Server Node.js đang chạy tại http://localhost:${PORT}`);
