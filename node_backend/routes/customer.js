@@ -10,6 +10,8 @@
  * POST   /api/customers/upload-csv         -> nhập CSV + dự báo + LƯU NGAY (form-data: file, region, onDuplicate?)
  * POST   /api/customers/bulk               -> "Lưu tất cả" từ trang Dự báo (JSON: region, rows, onDuplicate?)
  * POST   /api/customers/:id/notify         -> gửi lời nhắc (admin_message)
+ * GET    /api/customers/care?region=vn     -> "Cần chăm sóc tuần này": top hội viên mức Cao (mục 4.4)
+ * POST   /api/customers/rescore            -> "Chấm điểm ngay": chấm lại cả 1 thị trường (cốt lõi mục 4.3)
  *
  * LUẬT TRÙNG (dùng chung cho upload-csv và bulk):
  *   "Trùng" = cùng họ tên (không phân biệt hoa/thường, bỏ khoảng trắng thừa) + cùng thị trường.
@@ -29,7 +31,7 @@ const multer = require('multer');
 const Customer = require('../models/Customer');
 const verifyToken = require('../middleware/auth');
 const {
-    DEFAULT_REGION, PLANS, AiError, normalizeRegion, pickFeatures,
+    FEATURES, DEFAULT_REGION, PLANS, AiError, normalizeRegion, pickFeatures,
     callFlask, predictOne, predictBatch, toPredictionDoc, parseCsv, sendError,
 } = require('../utils/ai');
 
@@ -46,6 +48,13 @@ const ADMIN_LANG = 'vi'; // giao diện Admin là tiếng Việt -> lý do lưu 
 const HISTORY_LIMIT = 50; // giữ tối đa 50 lần dự báo gần nhất cho mỗi hội viên
 const historyPush = (prediction) => ({ predictionHistory: { $each: [prediction], $slice: -HISTORY_LIMIT } });
 const REGION_NAME = { vn: 'Việt Nam', global: 'Quốc tế' };
+const ACTIVE = 'Đang hoạt động';
+const LEVELS = ['Cao', 'Trung bình', 'Thấp'];
+
+/** Điều kiện lọc theo thị trường. Hồ sơ cũ (tạo trước khi có trường region) được coi là 'vn'. */
+const regionFilter = (region) => (region === DEFAULT_REGION
+    ? { $or: [{ region }, { region: { $exists: false } }] }
+    : { region });
 
 // Các trường thông tin cá nhân Admin được phép sửa (chặn ghi đè _id, prediction, password, ...)
 const EDITABLE_FIELDS = ['fullName', 'actualPhoneNumber'];
@@ -201,9 +210,7 @@ const normalizeDuplicateMode = (value) => {
 
 /** Map tên (đã chuẩn hóa) -> hồ sơ mới nhất có tên đó, trong cùng thị trường */
 const findExistingByName = async (region) => {
-    // Hồ sơ cũ (tạo trước khi có trường region) được coi là thị trường mặc định 'vn'
-    const filter = region === DEFAULT_REGION ? { $or: [{ region }, { region: { $exists: false } }] } : { region };
-    const existing = await Customer.find(filter).select('_id fullName createdAt').sort({ createdAt: 1 }).lean();
+    const existing = await Customer.find(regionFilter(region)).select('_id fullName createdAt').sort({ createdAt: 1 }).lean();
     const map = new Map();
     existing.forEach((c) => map.set(nameKey(c.fullName), c)); // sắp tăng dần -> giữ bản mới nhất
     return map;
@@ -373,6 +380,113 @@ router.post('/bulk', verifyToken, async (req, res) => {
         sendSaveResult(res, region, await saveMany(region, items, onDuplicate));
     } catch (error) {
         sendError(res, error, 'Lỗi khi lưu danh sách hội viên.');
+    }
+});
+
+/* ===================== CẦN CHĂM SÓC (4.4) + CHẤM ĐIỂM NGAY (4.3) ===================== */
+const CARE_DEFAULT_LIMIT = 10;
+const CARE_MAX_LIMIT = 50;
+const RESCORE_CHUNK = 1000;
+
+/**
+ * "Mới lên Cao": lần dự báo TRƯỚC là Thấp/Trung bình, lần GẦN NHẤT là Cao.
+ * history: mảng predictionHistory (chỉ cần 2 phần tử cuối).
+ */
+const isNewlyHigh = (history = []) => {
+    if (history.length < 2) return false;
+    const prev = history[history.length - 2]?.risk_level;
+    const last = history[history.length - 1]?.risk_level;
+    return last === 'Cao' && (prev === 'Thấp' || prev === 'Trung bình');
+};
+
+// --- 8. CẦN CHĂM SÓC TUẦN NÀY: hội viên mức Cao, % giảm dần (bằng % thì ai còn ít tháng hơn đứng trước) ---
+// GET /api/customers/care?region=vn&limit=10
+router.get('/care', verifyToken, async (req, res) => {
+    try {
+        const region = normalizeRegion(req.query.region);
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || CARE_DEFAULT_LIMIT, 1), CARE_MAX_LIMIT);
+
+        // Chỉ lấy các trường cần hiển thị + 2 lần dự báo cuối (để biết "Mới lên Cao") -> nhẹ
+        const highs = await Customer.find({ ...regionFilter(region), status: ACTIVE, 'prediction.risk_level': 'Cao' })
+            .select({
+                fullName: 1, actualPhoneNumber: 1, Contract_period: 1, Month_to_end_contract: 1,
+                prediction: 1, predictionHistory: { $slice: -2 },
+            })
+            .lean();
+
+        const sorted = highs.sort((a, b) =>
+            (b.prediction?.probability_percent ?? 0) - (a.prediction?.probability_percent ?? 0)
+            || (a.Month_to_end_contract ?? 0) - (b.Month_to_end_contract ?? 0));
+
+        const items = sorted.slice(0, limit).map((c) => ({
+            _id: c._id,
+            fullName: c.fullName,
+            actualPhoneNumber: c.actualPhoneNumber,
+            Contract_period: c.Contract_period,
+            Month_to_end_contract: c.Month_to_end_contract,
+            probability_percent: c.prediction?.probability_percent,
+            mainReason: (c.prediction?.reasons || [])[0] || '',
+            last_predicted_at: c.prediction?.last_predicted_at,
+            newlyHigh: isNewlyHigh(c.predictionHistory),
+        }));
+
+        res.status(200).json({
+            region,
+            totalHigh: highs.length,
+            newlyHighCount: highs.filter((c) => isNewlyHigh(c.predictionHistory)).length,
+            items,
+        });
+    } catch (error) {
+        sendError(res, error, 'Lỗi khi lấy danh sách cần chăm sóc.');
+    }
+});
+
+// --- 9. CHẤM ĐIỂM NGAY: chấm lại toàn bộ hội viên ĐANG HOẠT ĐỘNG của 1 thị trường từ 7 chỉ số đang lưu ---
+// POST /api/customers/rescore   body: { region }
+// Mỗi người: cập nhật prediction + thêm 1 dòng predictionHistory. Người "Chờ duyệt" không bị chấm.
+router.post('/rescore', verifyToken, async (req, res) => {
+    try {
+        const region = normalizeRegion((req.body || {}).region);
+        const fields = ['_id', 'fullName', 'prediction', ...FEATURES].join(' ');
+        const members = await Customer.find({ ...regionFilter(region), status: ACTIVE }).select(fields).lean();
+        if (!members.length) {
+            return res.status(200).json({ message: `Không có hội viên đang hoạt động nào ở thị trường ${REGION_NAME[region]}.`, total: 0, scored: 0, failed: 0 });
+        }
+
+        const results = await predictBatch(members.map(pickFeatures), region, ADMIN_LANG);
+
+        const counts = { 'Cao': 0, 'Trung bình': 0, 'Thấp': 0 };
+        const rowErrors = [];
+        let newlyHigh = 0;
+        const ops = [];
+        results.forEach((r, idx) => {
+            const c = members[idx];
+            if (!r.ok) {
+                rowErrors.push({ fullName: c.fullName, message: r.errors.map((e) => e.message).join(' ') });
+                return;
+            }
+            const prediction = toPredictionDoc(r);
+            counts[prediction.risk_level] += 1;
+            const before = c.prediction?.risk_level;
+            if (prediction.risk_level === 'Cao' && (before === 'Thấp' || before === 'Trung bình')) newlyHigh += 1;
+            ops.push({ updateOne: { filter: { _id: c._id }, update: { $set: { prediction }, $push: historyPush(prediction) } } });
+        });
+
+        for (let i = 0; i < ops.length; i += RESCORE_CHUNK) {
+            await Customer.bulkWrite(ops.slice(i, i + RESCORE_CHUNK), { ordered: false });
+        }
+
+        const scored = ops.length;
+        const message = `Đã chấm lại ${scored} hội viên ${REGION_NAME[region]}: `
+            + LEVELS.map((l) => `${counts[l]} ${l}`).join(', ') + '.'
+            + (newlyHigh ? ` ${newlyHigh} người vừa chuyển lên Cao.` : '')
+            + (rowErrors.length ? ` ${rowErrors.length} hội viên thiếu/sai số liệu nên không chấm được.` : '');
+        res.status(200).json({
+            message, total: members.length, scored, failed: rowErrors.length,
+            counts, newlyHigh, rowErrors: rowErrors.slice(0, 100),
+        });
+    } catch (error) {
+        sendError(res, error, 'Lỗi khi chấm điểm lại.');
     }
 });
 

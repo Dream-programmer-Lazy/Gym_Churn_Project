@@ -8,6 +8,7 @@ import CustomerForm from './components/CustomerForm';
 import CustomerList from './components/CustomerList';
 import Dashboard from './components/Dashboard';
 import Overview from './components/Overview';
+import CareList from './components/CareList';
 import Login from './components/Login';
 import ClientRegister from './components/ClientRegister';
 import ClientLogin from './components/ClientLogin';
@@ -172,6 +173,14 @@ function App() {
     setAdminTab('overview');
   };
 
+  // "Xem tất cả người mức Cao" trong khung Cần chăm sóc -> lọc bảng hội viên + cuộn tới bảng
+  const viewAllHigh = () => {
+    setActiveFilter('Cao');
+    setTimeout(() => {
+      document.getElementById('customer-list-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  };
+
   // Click 1 thông báo → mở trang thị trường của hội viên đó và cuộn tới bảng để duyệt
   const goToPending = (customer) => {
     setShowNotif(false);
@@ -311,6 +320,9 @@ function App() {
           {isMarketTab && (
             <div key={adminTab}>
               <Dashboard region={adminTab} refreshFlag={refreshFlag} onCardClick={setActiveFilter} activeFilter={activeFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />
+
+              {/* Cần chăm sóc tuần này (4.4) + Chấm điểm ngay (4.3) */}
+              <CareList region={adminTab} refreshFlag={refreshFlag} onRescored={handleRefresh} onViewAll={viewAllHigh} />
 
               <div className="ad-workspace">
                 <section className="ad-panel ad-form-panel" id="customer-form-panel"

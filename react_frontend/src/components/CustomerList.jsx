@@ -26,6 +26,8 @@ const toneOf = (cus) => (isPendingOf(cus) ? 'tone-pend' : LEVEL_TONE[cus.predict
  *        externalFilter, onFilterChange, dateFilter
  * - Nút "Tải lên CSV": lưu thẳng vào thị trường của trang. Có tên trùng -> hỏi Cập nhật / Bỏ qua (luật trùng).
  * - Chỉ còn 1 mô hình -> bỏ ô chọn thuật toán.
+ * - Đang lọc theo mức rủi ro (Cao / Trung bình / An toàn) -> sắp theo % rủi ro giảm dần (người nguy hiểm nhất lên đầu).
+ *   Xem "Tất cả" -> giữ thứ tự cũ (mới tạo lên đầu).
  */
 export default function CustomerList({ region = 'vn', setEditingCustomer, refreshFlag, onSuccess, externalFilter, onFilterChange, dateFilter }) {
   const [customers, setCustomers] = useState([]);
@@ -163,6 +165,10 @@ export default function CustomerList({ region = 'vn', setEditingCustomer, refres
 
     return matchSearch && matchRisk && matchDate;
   });
+
+  if (externalFilter !== 'All') {
+    filteredCustomers.sort((a, b) => (b.prediction?.probability_percent ?? 0) - (a.prediction?.probability_percent ?? 0));
+  }
 
   const pendingCount = customers.filter(c => c.status === 'Chờ duyệt').length;
   const shown = filteredCustomers.slice(0, limit);
