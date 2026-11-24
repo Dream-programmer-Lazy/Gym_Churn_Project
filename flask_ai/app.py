@@ -1,22 +1,23 @@
 """
 FLASK AI API — DỰ BÁO RỜI BỎ THEO THỊ TRƯỜNG (SONG NGỮ VI / EN)
 ---------------------------------------------------------------
+Một mô hình duy nhất: Logistic Regression cân bằng, 7 cột (xem train_model.py).
 Nạp 2 gói mô hình do train_model.py tạo ra:
-    vn_model.pkl      (region = "vn")
-    global_model.pkl  (region = "global")
+    vn_model.pkl      (region = "vn",     tiền: nghìn VNĐ)
+    global_model.pkl  (region = "global", tiền: USD)
 
 Endpoints:
     GET  /health
-    GET  /model-info?region=vn&lang=vi     -> khoảng giá trị, giá trị gợi ý, gói tập (dựng form)
-    GET  /metrics?region=vn                -> Accuracy/Precision/Recall/F1 (giữ định dạng cũ cho Admin)
+    GET  /model-info?region=vn&lang=vi     -> khoảng giá trị, gói tập, đơn vị tiền (dựng form)
+    GET  /metrics?region=vn                -> Accuracy/Precision/Recall/F1/AUC + bảng so sánh cho báo cáo
     POST /predict                          -> dự báo 1 hội viên
     POST /predict-batch                    -> dự báo nhiều hội viên (CSV)
 
 Body của /predict:
-    { "region": "vn" | "global",           (mặc định "vn" để tương thích code Node cũ)
-      "model_type": "logistic" | "random_forest",
+    { "region": "vn" | "global",           (mặc định "vn")
       "lang": "vi" | "en",                 (mặc định: vn -> vi, global -> en)
-      ...13 biến... }
+      ...7 cột... }                         (cột thừa, ví dụ gender/Phone/fullName, được bỏ qua)
+    "model_type" cũ vẫn được nhận nhưng bỏ qua (chỉ còn 1 mô hình).
 """
 
 import math
@@ -33,10 +34,12 @@ app.json.ensure_ascii = False   # trả tiếng Việt có dấu thay vì \u00ec
 CORS(app)
 
 MODEL_FILES = {'vn': 'vn_model.pkl', 'global': 'global_model.pkl'}
+REQUIRED_SCHEMA = 'gym-region-model-v2'
 DEFAULT_REGION = 'vn'
 DEFAULT_LANG = {'vn': 'vi', 'global': 'en'}
 LANGS = ('vi', 'en')
-MODEL_NAMES = {'logistic': 'Logistic Regression', 'random_forest': 'Random Forest'}
+MODEL_USED = 'Logistic Regression'   # giá trị lưu vào MongoDB (prediction.model_used)
+MODEL_TYPE = 'logistic'
 MAX_FREQ_PER_WEEK = 7
 MAX_BATCH_ROWS = 5000
 FREQ_TOTAL = 'Avg_class_frequency_total'
@@ -49,19 +52,13 @@ MIN_IMPACT = 0.15   # log-odds: yếu tố ảnh hưởng nhỏ hơn mức này 
 REGION_LABEL = {'vn': {'vi': 'Việt Nam', 'en': 'Vietnam'}, 'global': {'vi': 'Quốc tế', 'en': 'International'}}
 
 FIELD_LABEL = {
-    'gender':                       {'vi': 'Giới tính', 'en': 'Gender'},
-    'Near_Location':                {'vi': 'Ở gần phòng tập', 'en': 'Lives or works nearby'},
-    'Partner':                      {'vi': 'Đăng ký qua công ty đối tác', 'en': 'Corporate partner member'},
-    'Promo_friends':                {'vi': 'Được bạn bè giới thiệu', 'en': 'Referred by a friend'},
-    'Phone':                        {'vi': 'Có cung cấp số điện thoại', 'en': 'Phone number on file'},
-    'Contract_period':              {'vi': 'Thời hạn gói tập', 'en': 'Plan length'},
-    'Group_visits':                 {'vi': 'Tham gia lớp tập nhóm', 'en': 'Attends group classes'},
+    'Lifetime':                     {'vi': 'Thời gian đã là hội viên', 'en': 'Months as a member'},
+    FREQ_CURRENT:                   {'vi': 'Số buổi tập/tuần trong tháng gần nhất', 'en': 'Visits per week last month'},
+    FREQ_TOTAL:                     {'vi': 'Số buổi tập/tuần từ khi đăng ký', 'en': 'Visits per week since joining'},
     'Age':                          {'vi': 'Tuổi', 'en': 'Age'},
     'Avg_additional_charges_total': {'vi': 'Chi tiêu thêm mỗi tháng', 'en': 'Extra monthly spend'},
     'Month_to_end_contract':        {'vi': 'Số tháng còn lại của hợp đồng', 'en': 'Months left on contract'},
-    'Lifetime':                     {'vi': 'Thời gian đã là hội viên', 'en': 'Months as a member'},
-    FREQ_TOTAL:                     {'vi': 'Số buổi tập/tuần từ khi đăng ký', 'en': 'Visits per week since joining'},
-    FREQ_CURRENT:                   {'vi': 'Số buổi tập/tuần trong tháng gần nhất', 'en': 'Visits per week last month'},
+    'Contract_period':              {'vi': 'Thời hạn gói tập', 'en': 'Plan length'},
 }
 
 UNIT = {
@@ -73,15 +70,9 @@ UNIT = {
     FREQ_CURRENT:            {'vi': 'buổi/tuần', 'en': 'visits/week'},
 }
 
-# Tiêu đề lý do theo TRẠNG THÁI của biến (không theo chiều tác động) -> luôn đúng nghĩa
-#   biến 0/1: '0' / '1'      biến số: 'low' (< trung bình) / 'high' (>= trung bình)
+# Tiêu đề lý do theo TRẠNG THÁI của cột (không theo chiều tác động) -> luôn đúng nghĩa
+#   'low' (< trung bình thị trường) / 'high' (>= trung bình thị trường)
 TITLES = {
-    'gender':          {'0': {'vi': 'Giới tính nữ', 'en': 'Female member'}, '1': {'vi': 'Giới tính nam', 'en': 'Male member'}},
-    'Near_Location':   {'0': {'vi': 'Ở xa phòng tập', 'en': 'Lives far from the gym'}, '1': {'vi': 'Ở gần phòng tập', 'en': 'Lives near the gym'}},
-    'Partner':         {'0': {'vi': 'Không đăng ký qua đối tác', 'en': 'Not a corporate member'}, '1': {'vi': 'Đăng ký qua đối tác', 'en': 'Corporate partner member'}},
-    'Promo_friends':   {'0': {'vi': 'Không có bạn bè giới thiệu', 'en': 'Not referred by a friend'}, '1': {'vi': 'Được bạn bè giới thiệu', 'en': 'Referred by a friend'}},
-    'Phone':           {'0': {'vi': 'Chưa có số điện thoại', 'en': 'No phone number on file'}, '1': {'vi': 'Đã có số điện thoại', 'en': 'Phone number on file'}},
-    'Group_visits':    {'0': {'vi': 'Không tập lớp nhóm', 'en': 'No group classes'}, '1': {'vi': 'Có tập lớp nhóm', 'en': 'Attends group classes'}},
     'Age':             {'low': {'vi': 'Trẻ hơn mức trung bình', 'en': 'Younger than average'}, 'high': {'vi': 'Lớn tuổi hơn mức trung bình', 'en': 'Older than average'}},
     'Contract_period': {'low': {'vi': 'Gói tập ngắn hạn', 'en': 'Short-term plan'}, 'high': {'vi': 'Gói tập dài hạn', 'en': 'Long-term plan'}},
     'Month_to_end_contract': {'low': {'vi': 'Hợp đồng sắp hết hạn', 'en': 'Contract ending soon'}, 'high': {'vi': 'Hợp đồng còn dài', 'en': 'Plenty of time left on contract'}},
@@ -100,26 +91,14 @@ ACTION_TIPS = {
                                      'en': 'Call to check in and book a session with a personal trainer.'},
     'Month_to_end_contract':        {'vi': 'Gửi ưu đãi gia hạn trước khi hợp đồng hết hạn.',
                                      'en': 'Send a renewal offer before the contract ends.'},
-    'Group_visits':                 {'vi': 'Mời tham gia một lớp tập nhóm miễn phí.',
-                                     'en': 'Invite them to a free group class.'},
     'Lifetime':                     {'vi': 'Chăm sóc kỹ hội viên mới trong 3 tháng đầu.',
                                      'en': 'Give extra onboarding support during the first 3 months.'},
-    'Near_Location':                {'vi': 'Gợi ý khung giờ vắng hoặc chi nhánh gần hơn.',
-                                     'en': 'Suggest quieter hours or a closer branch.'},
     'Contract_period':              {'vi': 'Đề xuất nâng cấp lên gói dài hạn kèm ưu đãi.',
                                      'en': 'Offer an upgrade to a longer plan with a discount.'},
-    'Partner':                      {'vi': 'Giới thiệu chương trình ưu đãi doanh nghiệp.',
-                                     'en': 'Introduce the corporate partner programme.'},
-    'Promo_friends':                {'vi': 'Mời tham gia chương trình "rủ bạn tập cùng".',
-                                     'en': 'Invite them to the bring-a-friend programme.'},
     'Avg_additional_charges_total': {'vi': 'Tặng thử một dịch vụ đi kèm (đồ uống, PT, đo InBody).',
                                      'en': 'Offer a free add-on service to try (drinks, PT, body scan).'},
     'Age':                          {'vi': 'Đề xuất chương trình tập phù hợp với độ tuổi.',
                                      'en': 'Suggest a training programme suited to their age.'},
-    'gender':                       {'vi': 'Cá nhân hóa nội dung chăm sóc.',
-                                     'en': 'Personalise how you reach out.'},
-    'Phone':                        {'vi': 'Bổ sung số điện thoại để chăm sóc trực tiếp.',
-                                     'en': 'Collect a phone number so staff can follow up.'},
 }
 
 LEVEL_WORD = {'Cao': {'vi': 'cao', 'en': 'high'}, 'Trung bình': {'vi': 'trung bình', 'en': 'medium'}, 'Thấp': {'vi': 'thấp', 'en': 'low'}}
@@ -137,8 +116,8 @@ MSG = {
     'missing':      {'vi': "Thiếu '{label}'.", 'en': "'{label}' is required."},
     'not_number':   {'vi': "'{label}' phải là số (nhận được: {value}).", 'en': "'{label}' must be a number (got: {value})."},
     'invalid':      {'vi': "'{label}' không hợp lệ.", 'en': "'{label}' is not valid."},
-    'binary':       {'vi': "'{label}' chỉ nhận 0 hoặc 1.", 'en': "'{label}' must be 0 or 1."},
     'negative':     {'vi': "'{label}' không được âm.", 'en': "'{label}' cannot be negative."},
+    'plan_zero':    {'vi': 'Thời hạn gói tập phải ít nhất 1 tháng.', 'en': 'The plan must be at least 1 month long.'},
     'mte_gt':       {'vi': 'Số tháng còn lại không được lớn hơn thời hạn gói tập.', 'en': 'Months left cannot be longer than the plan.'},
     'freq_max':     {'vi': "'{label}' tối đa {max} buổi/tuần.", 'en': "'{label}' can be at most {max} visits a week."},
     'unseen_plan':  {'vi': 'Mô hình {region} chưa từng học gói {value} tháng (chỉ học gói {allowed} tháng). Kết quả kém tin cậy hơn.',
@@ -157,8 +136,6 @@ MSG = {
     'trend_flat':   {'vi': 'Khoảng {c} buổi/tuần. Trung bình thị trường là {m} buổi.',
                      'en': 'About {c} visits a week. Market average is {m}.'},
     'bad_region':   {'vi': "region không hợp lệ: '{value}'. Chỉ chấp nhận: vn, global.", 'en': "Invalid region '{value}'. Use vn or global."},
-    'bad_model':    {'vi': "model_type không hợp lệ: '{value}'. Chỉ chấp nhận: logistic, random_forest.",
-                     'en': "Invalid model_type '{value}'. Use logistic or random_forest."},
     'bad_row':      {'vi': 'Dòng không hợp lệ.', 'en': 'Invalid row.'},
 }
 
@@ -173,9 +150,12 @@ def tr(key, lang, **kw):
 BUNDLES = {}
 for region_key, filename in MODEL_FILES.items():
     try:
-        BUNDLES[region_key] = joblib.load(BASE_DIR / filename)
-        print(f"✅ Đã nạp {filename} ({BUNDLES[region_key]['label_vi']}, "
-              f"huấn luyện lúc {BUNDLES[region_key]['trained_at_utc'][:19]})")
+        bundle = joblib.load(BASE_DIR / filename)
+        if bundle.get('schema_version') != REQUIRED_SCHEMA or 'model' not in bundle:
+            raise ValueError("file mô hình là bản cũ (13 cột / 2 thuật toán)")
+        BUNDLES[region_key] = bundle
+        print(f"✅ Đã nạp {filename} ({bundle['label_vi']}, {len(bundle['features'])} cột, "
+              f"huấn luyện lúc {bundle['trained_at_utc'][:19]})")
     except Exception as e:  # noqa: BLE001
         print(f"❌ Không nạp được {filename}: {e}\n   -> Chạy 'python train_model.py' trong thư mục flask_ai trước.")
 
@@ -185,7 +165,7 @@ def get_bundle(region):
     if region not in MODEL_FILES:
         raise ValueError(tr('bad_region', 'vi', value=region))
     if region not in BUNDLES:
-        raise LookupError(f"Mô hình thị trường '{region}' chưa được nạp. Hãy chạy train_model.py.")
+        raise LookupError(f"Mô hình thị trường '{region}' chưa được nạp. Hãy chạy train_model.py rồi khởi động lại app.py.")
     return region, BUNDLES[region]
 
 
@@ -221,17 +201,17 @@ def fmt_value(field, value, region, lang):
 
 
 def label_of(field, lang):
-    return FIELD_LABEL[field][lang]
+    return FIELD_LABEL.get(field, {}).get(lang, field)
 
 
 # ---------------------------------------------------------------------------
 # KIỂM TRA DỮ LIỆU
 #   errors   -> chặn, không dự báo
 #   warnings -> vẫn dự báo, nhưng báo cho người dùng biết độ tin cậy giảm
+# Chỉ kiểm tra 7 cột của mô hình; cột thừa trong dữ liệu gửi lên được bỏ qua.
 # ---------------------------------------------------------------------------
 def validate(raw, region, bundle, lang):
     features = bundle['features']
-    binary = set(bundle['binary_features'])
     profile = bundle['profile']
     values, errors, warnings = {}, [], []
 
@@ -241,16 +221,16 @@ def validate(raw, region, bundle, lang):
         if v is None or (isinstance(v, str) and v.strip() == ''):
             errors.append({'field': f, 'message': tr('missing', lang, label=label)})
             continue
+        if isinstance(v, bool):
+            errors.append({'field': f, 'message': tr('not_number', lang, label=label, value=repr(v))})
+            continue
         try:
-            num = float(str(v).replace(',', '.')) if isinstance(v, str) else float(v)
+            num = float(str(v).strip().replace(',', '.')) if isinstance(v, str) else float(v)
         except (TypeError, ValueError):
             errors.append({'field': f, 'message': tr('not_number', lang, label=label, value=repr(v))})
             continue
         if math.isnan(num) or math.isinf(num):
             errors.append({'field': f, 'message': tr('invalid', lang, label=label)})
-            continue
-        if f in binary and num not in (0.0, 1.0):
-            errors.append({'field': f, 'message': tr('binary', lang, label=label)})
             continue
         if num < 0:
             errors.append({'field': f, 'message': tr('negative', lang, label=label)})
@@ -260,6 +240,8 @@ def validate(raw, region, bundle, lang):
     if errors:
         return values, errors, warnings
 
+    if values['Contract_period'] < 1:
+        errors.append({'field': 'Contract_period', 'message': tr('plan_zero', lang)})
     if values['Month_to_end_contract'] > values['Contract_period']:
         errors.append({'field': 'Month_to_end_contract', 'message': tr('mte_gt', lang)})
     for f in (FREQ_TOTAL, FREQ_CURRENT):
@@ -268,14 +250,15 @@ def validate(raw, region, bundle, lang):
     if errors:
         return values, errors, warnings
 
-    contract = int(values['Contract_period'])
-    if contract not in bundle['contract_values']:
+    contract = values['Contract_period']
+    if not float(contract).is_integer() or int(contract) not in bundle['contract_values']:
         allowed = ', '.join(str(c) for c in bundle['contract_values'])
         warnings.append({'field': 'Contract_period', 'code': 'unseen_category',
-                         'message': tr('unseen_plan', lang, region=REGION_LABEL[region][lang], value=contract, allowed=allowed)})
+                         'message': tr('unseen_plan', lang, region=REGION_LABEL[region][lang],
+                                       value=fmt_num(contract, lang), allowed=allowed)})
 
     for f in features:
-        if f in binary or f == 'Contract_period':
+        if f == 'Contract_period':
             continue
         lo, hi = profile[f]['min'], profile[f]['max']
         if values[f] < lo or values[f] > hi:
@@ -296,9 +279,10 @@ def validate(raw, region, bundle, lang):
 # DỰ BÁO + GIẢI THÍCH
 # ---------------------------------------------------------------------------
 def risk_label(percent, thresholds):
+    """Cao >= 70% | Trung bình 50–70% (tính cả đúng 50%) | Thấp < 50%"""
     if percent >= thresholds['high']:
         return 'Cao'
-    if percent > thresholds['medium']:
+    if percent >= thresholds['medium']:
         return 'Trung bình'
     return 'Thấp'
 
@@ -315,17 +299,16 @@ def _reason_item(field, state, impact, detail, lang, value, extra=None):
 
 def explain(values, region, bundle, lang, top_k=3):
     """
-    Đóng góp của từng biến lên log-odds của Logistic Regression:
+    Đóng góp của từng cột lên log-odds của Logistic Regression:
         contribution_i = coef_i * (x_i - mean_i) / std_i
     > 0 : làm TĂNG rủi ro so với một hội viên "trung bình" của thị trường
     < 0 : làm GIẢM rủi ro
-    (Dùng Logistic của cùng thị trường để giải thích cho cả 2 thuật toán.)
 
-    Hai biến tần suất tương quan rất mạnh (đa cộng tuyến) nên được GỘP thành
+    Hai cột tần suất tương quan rất mạnh (đa cộng tuyến) nên được GỘP thành
     một yếu tố "xu hướng tập luyện" với đóng góp = tổng 2 đóng góp.
     """
     ex, profile = bundle['explain'], bundle['profile']
-    features, binary = bundle['features'], set(bundle['binary_features'])
+    features = bundle['features']
     contrib = {f: ex['coef'][i] * (values[f] - ex['mean'][i]) / ex['scale'][i] for i, f in enumerate(features)}
 
     items = []
@@ -333,13 +316,10 @@ def explain(values, region, bundle, lang, top_k=3):
         if f in (FREQ_TOTAL, FREQ_CURRENT):
             continue
         x = values[f]
-        if f in binary:
-            items.append(_reason_item(f, str(int(x)), contrib[f], '', lang, x))
-        else:
-            mean = profile[f]['mean']
-            state = 'low' if x < mean else 'high'
-            detail = tr('avg_detail', lang, value=fmt_value(f, x, region, lang), mean=fmt_value(f, mean, region, lang))
-            items.append(_reason_item(f, state, contrib[f], detail, lang, x))
+        mean = profile[f]['mean']
+        state = 'low' if x < mean else 'high'
+        detail = tr('avg_detail', lang, value=fmt_value(f, x, region, lang), mean=fmt_value(f, mean, region, lang))
+        items.append(_reason_item(f, state, contrib[f], detail, lang, x))
 
     t, c = values[FREQ_TOTAL], values[FREQ_CURRENT]
     mean_now = profile[FREQ_CURRENT]['mean']
@@ -374,18 +354,15 @@ def build_advice(level, reasons, lang):
     return {'level': level, 'title': title, 'text': text, 'actions': actions}
 
 
-def predict_one(raw, region=None, model_type=None, lang=None):
+def predict_one(raw, region=None, lang=None):
     region, bundle = get_bundle(region)
     lang = get_lang(lang, region)
-    model_type = (model_type or 'logistic').strip().lower()
-    if model_type not in MODEL_NAMES:
-        raise ValueError(tr('bad_model', lang, value=model_type))
 
     values, errors, warnings = validate(raw, region, bundle, lang)
     if errors:
         return {'ok': False, 'errors': errors}
 
-    model = bundle['models'][model_type]
+    model = bundle['model']
     X = pd.DataFrame([[values[f] for f in bundle['features']]], columns=bundle['features'])
     positive_index = list(model.classes_).index(1)
     prob = float(model.predict_proba(X)[0][positive_index])
@@ -398,11 +375,13 @@ def predict_one(raw, region=None, model_type=None, lang=None):
         # --- 3 trường cũ: Node/Mongo đang dùng, giữ nguyên tên & giá trị ---
         'probability_percent': percent,
         'risk_level': level,                    # luôn là 'Cao' | 'Trung bình' | 'Thấp' (khóa ổn định)
-        'model_used': MODEL_NAMES[model_type],
-        # --- Thông tin mới ---
+        'model_used': MODEL_USED,
+        # --- Thông tin thêm ---
         'risk_word': LEVEL_WORD[level][lang],   # chữ hiển thị theo ngôn ngữ: cao / high ...
         'lang': lang,
-        'model_type': model_type,
+        'model_type': MODEL_TYPE,
+        'model_name': bundle.get('model_name', MODEL_USED),
+        'features_used': bundle['features'],
         'region': region,
         'region_label': REGION_LABEL[region][lang],
         'currency': bundle['currency'],
@@ -426,7 +405,9 @@ def _region_error(e):
 def health():
     return jsonify({
         'status': 'ok' if len(BUNDLES) == len(MODEL_FILES) else 'degraded',
+        'model': MODEL_USED,
         'models': {k: {'loaded': k in BUNDLES,
+                       'features': len(BUNDLES[k]['features']) if k in BUNDLES else None,
                        'trained_at_utc': BUNDLES[k]['trained_at_utc'] if k in BUNDLES else None}
                    for k in MODEL_FILES},
     })
@@ -434,7 +415,7 @@ def health():
 
 @app.route('/model-info', methods=['GET'])
 def model_info():
-    """Frontend dùng để dựng form: khoảng hợp lệ, giá trị gợi ý, gói tập, đơn vị tiền."""
+    """Frontend dùng để dựng form: khoảng hợp lệ, gói tập, đơn vị tiền."""
     try:
         region, bundle = get_bundle(request.args.get('region'))
     except (ValueError, LookupError) as e:
@@ -444,17 +425,15 @@ def model_info():
     fields = []
     for f in bundle['features']:
         p = bundle['profile'][f]
-        item = {'name': f, 'label': label_of(f, lang), 'binary': f in bundle['binary_features'],
-                'train_min': p['min'], 'train_max': p['max'], 'p05': p['p05'], 'p95': p['p95'],
-                'median': p['median'], 'mean': p['mean']}
-        if item['binary']:
-            item['default'] = p['mode']       # nút Có/Không: điền sẵn giá trị phổ biến nhất
-        fields.append(item)
+        fields.append({'name': f, 'label': label_of(f, lang), 'binary': False,
+                       'train_min': p['min'], 'train_max': p['max'], 'p05': p['p05'], 'p95': p['p95'],
+                       'median': p['median'], 'mean': p['mean']})
 
     return jsonify({
         'region': region, 'lang': lang, 'region_label': REGION_LABEL[region][lang], 'currency': bundle['currency'],
         'contract_values': bundle['contract_values'], 'max_frequency': MAX_FREQ_PER_WEEK,
         'thresholds': bundle['thresholds'], 'data_kind': bundle['data_kind'],
+        'model_name': bundle.get('model_name', MODEL_USED), 'features': bundle['features'],
         'model_version': bundle['trained_at_utc'], 'fields': fields,
     })
 
@@ -465,14 +444,25 @@ def get_metrics():
         region, bundle = get_bundle(request.args.get('region'))
     except (ValueError, LookupError) as e:
         return _region_error(e)
-    payload = dict(bundle['metrics'])
-    # ModelMetricsDashboard (React) đọc response.data.models.logistic -> giữ đúng cấu trúc file JSON cũ
-    payload['models'] = {'logistic': bundle['metrics']['logistic'],
-                         'random_forest': bundle['metrics']['random_forest']}
-    payload.update({'region': region, 'region_label': bundle['label_vi'],
-                    'data_file': bundle['data_file'], 'data_kind': bundle['data_kind'],
-                    'trained_at_utc': bundle['trained_at_utc']})
-    return jsonify(payload)
+    m = bundle['metrics']
+    return jsonify({
+        'region': region,
+        'region_label': bundle['label_vi'],
+        'model_name': bundle.get('model_name', MODEL_USED),
+        'features': bundle['features'],
+        'data_file': bundle['data_file'],
+        'data_kind': bundle['data_kind'],
+        'trained_at_utc': bundle['trained_at_utc'],
+        'train_rows': m['train_rows'],
+        'test_rows': m['test_rows'],
+        'churn_rate': m.get('churn_rate'),
+        'majority_baseline_accuracy': m['majority_baseline_accuracy'],
+        'decision_rule': m['decision_rule'],
+        'thresholds': bundle['thresholds'],
+        'logistic': m['logistic'],
+        'models': {'logistic': m['logistic']},   # giữ cấu trúc cũ (response.data.models.logistic)
+        'comparison': bundle.get('comparison', []),
+    })
 
 
 @app.route('/predict', methods=['POST'])
@@ -481,7 +471,7 @@ def predict():
     if not isinstance(data, dict):
         return jsonify({'error': 'Body phải là JSON object.'}), 400
     try:
-        result = predict_one(data, data.get('region'), data.get('model_type'), data.get('lang'))
+        result = predict_one(data, data.get('region'), data.get('lang'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except LookupError as e:
@@ -498,12 +488,12 @@ def predict():
 @app.route('/predict-batch', methods=['POST'])
 def predict_batch():
     """
-    Body: { "region": "vn", "model_type": "logistic", "lang": "vi", "rows": [ {13 biến, fullName?}, ... ] }
+    Body: { "region": "vn", "lang": "vi", "rows": [ {7 cột, fullName?, cột thừa...}, ... ] }
     Trả về kết quả từng dòng; dòng lỗi không làm hỏng các dòng khác.
     """
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get('rows'), list):
-        return jsonify({'error': "Body phải có dạng { region, model_type, rows: [...] }."}), 400
+        return jsonify({'error': "Body phải có dạng { region, lang, rows: [...] }."}), 400
     rows = data['rows']
     if not rows:
         return jsonify({'error': 'Danh sách rows đang trống.'}), 400
@@ -519,7 +509,7 @@ def predict_batch():
                 results.append({'row': i + 1, 'ok': False, 'errors': [{'field': None, 'message': tr('bad_row', lang)}]})
                 summary['failed'] += 1
                 continue
-            r = predict_one(row, region, data.get('model_type'), lang)
+            r = predict_one(row, region, lang)
             r['row'] = i + 1
             if row.get('fullName'):
                 r['fullName'] = row['fullName']

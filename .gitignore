@@ -38,6 +38,8 @@ desktop.ini
 .idea/
 *.log
 
+node_backend/backup_*.json
+
 # LƯU Ý: KHÔNG bỏ qua *.csv và *.pkl
 #   - flask_ai/*.csv  : dữ liệu huấn luyện, cần cho báo cáo
 #   - flask_ai/*.pkl  : mô hình đã huấn luyện, cần khi triển khai lên mạng

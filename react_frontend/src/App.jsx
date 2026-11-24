@@ -1,18 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Bell, LogOut, Settings, UserCircle, LayoutDashboard, BrainCircuit, Activity, X } from 'lucide-react';
+import { Bell, LogOut, Settings, UserCircle, LayoutDashboard, MapPin, Globe, Sparkles, Activity, X } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
+import { API_URL } from './config';
 import CustomerForm from './components/CustomerForm';
 import CustomerList from './components/CustomerList';
 import Dashboard from './components/Dashboard';
+import Overview from './components/Overview';
 import Login from './components/Login';
 import ClientRegister from './components/ClientRegister';
 import ClientLogin from './components/ClientLogin';
 import LandingPage from './components/LandingPage';
 import ClientDashboard from './components/ClientDashboard';
-import ModelMetricsDashboard from './components/ModelMetricsDashboard';
 import PredictWizard from './components/predict/PredictWizard';
+import { regionOf } from './components/predict/utils';
 import './styles/admin.css';
 
 // Đọc hạn dùng (exp) trong JWT mà không cần thư viện. Token hỏng cũng coi như hết hạn.
@@ -80,6 +82,15 @@ const TOAST_OPTIONS = {
   error: { iconTheme: { primary: '#e11d48', secondary: '#fff' } },
 };
 
+// Menu Admin: Tổng quan | Hội viên Việt Nam | Hội viên Quốc tế | Dự báo
+const NAV = [
+  { key: 'overview', label: 'Tổng quan', title: 'Tổng quan 2 thị trường', Icon: LayoutDashboard },
+  { key: 'vn', label: 'Hội viên Việt Nam', title: 'Hội viên Việt Nam', Icon: MapPin },
+  { key: 'global', label: 'Hội viên Quốc tế', title: 'Hội viên Quốc tế', Icon: Globe },
+  { key: 'predict', label: 'Dự báo', title: 'Dự báo & lưu vào hệ thống', Icon: Sparkles },
+];
+const MARKET_TABS = ['vn', 'global'];
+
 const getInitials = (name = '') =>
   name.trim().split(/\s+/).slice(-2).map(n => n[0]).join('').toUpperCase() || 'AD';
 
@@ -95,17 +106,24 @@ function App() {
   const [dateFilter, setDateFilter] = useState('all');
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // Quản lý Tab hiển thị trên giao diện Admin
-  const [adminTab, setAdminTab] = useState('prediction');
+  // Trang đang mở trong Admin: 'overview' | 'vn' | 'global' | 'predict'
+  const [adminTab, setAdminTab] = useState('overview');
 
   const notifRef = useRef(null);
   const userMenuRef = useRef(null);
 
   const handleRefresh = () => setRefreshFlag(prev => prev + 1);
 
+  // Đổi trang: bỏ lọc cũ và bỏ trạng thái "đang sửa" của trang trước
+  const openTab = (tab, filter = 'All') => {
+    setAdminTab(tab);
+    setActiveFilter(filter);
+    setEditingCustomer(null);
+  };
+
   useEffect(() => {
     if (currentUser && currentUser.role !== 'Customer') {
-      axios.get('http://localhost:3001/api/customers')
+      axios.get(`${API_URL}/customers`)
         .then(res => {
           const pending = res.data.filter(c => c.status === 'Chờ duyệt');
           setPendingUsers(pending);
@@ -151,15 +169,16 @@ function App() {
     setCurrentUser(null);
     setView('landing');
     setShowUserMenu(false);
+    setAdminTab('overview');
   };
 
-  // Click 1 thông báo → về tab Dự báo và cuộn tới bảng hội viên để duyệt
-  const goToPending = () => {
+  // Click 1 thông báo → mở trang thị trường của hội viên đó và cuộn tới bảng để duyệt
+  const goToPending = (customer) => {
     setShowNotif(false);
-    setAdminTab('prediction');
+    openTab(regionOf(customer));
     setTimeout(() => {
       document.getElementById('customer-list-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 50);
+    }, 80);
   };
 
   // Toaster dùng chung cho MỌI màn hình (kể cả đăng nhập, landing)
@@ -170,9 +189,14 @@ function App() {
   if (!currentUser && view === 'client_register') return <>{toaster}<ClientRegister onBack={() => setView('landing')} /></>;
   if (!currentUser && view === 'client_login') return <>{toaster}<ClientLogin onLoginSuccess={setCurrentUser} onBack={() => setView('landing')} /></>;
   if (!currentUser && view === 'login') return <>{toaster}<Login onLoginSuccess={setCurrentUser} onBack={() => setView('landing')} /></>;
-  if (!currentUser && view === 'predict') return <>{toaster}<PredictWizard onBack={() => setView('landing')} /></>; 
+  // Trang dùng thử công khai (không lưu) — phương án A: vẫn giữ ở Landing Page
+  if (!currentUser && view === 'predict') return <>{toaster}<PredictWizard onBack={() => setView('landing')} /></>;
+  if (!currentUser) return <>{toaster}<LandingPage onNavigate={setView} /></>;
+
   const roleLabel = currentUser.role === 'Admin' ? 'Quản trị viên hệ thống' : 'Quản lý phòng tập';
-  const pageTitle = adminTab === 'prediction' ? 'Dự báo rời bỏ' : 'Chỉ số đánh giá AI';
+  const pageTitle = NAV.find((n) => n.key === adminTab)?.title || '';
+  const isMarketTab = MARKET_TABS.includes(adminTab);
+  const marketName = { vn: 'Việt Nam', global: 'Quốc tế' };
 
   return (
     <div className="ad-root">
@@ -190,12 +214,11 @@ function App() {
 
         <nav className="ad-nav" aria-label="Điều hướng quản trị">
           <div className="ad-nav-title">Không gian làm việc</div>
-          <button className="ad-nav-item" aria-current={adminTab === 'prediction' ? 'page' : undefined} onClick={() => setAdminTab('prediction')}>
-            <LayoutDashboard size={17} /> Dự báo rời bỏ
-          </button>
-          <button className="ad-nav-item" aria-current={adminTab === 'metrics' ? 'page' : undefined} onClick={() => setAdminTab('metrics')}>
-            <BrainCircuit size={17} /> Chỉ số đánh giá AI
-          </button>
+          {NAV.map(({ key, label, Icon }) => (
+            <button key={key} className="ad-nav-item" aria-current={adminTab === key ? 'page' : undefined} onClick={() => openTab(key)}>
+              <Icon size={17} /> {label}
+            </button>
+          ))}
         </nav>
 
         <div className="ad-sidebar-foot">
@@ -232,11 +255,11 @@ function App() {
                       <div className="ad-empty-mini">Không có hội viên nào đang chờ duyệt.</div>
                     ) : (
                       pendingUsers.map(u => (
-                        <button key={u._id} className="ad-notif-item" onClick={goToPending}>
+                        <button key={u._id} className="ad-notif-item" onClick={() => goToPending(u)}>
                           <span className="ad-notif-dot" />
                           <span>
                             <strong>{u.fullName}</strong> vừa đăng ký gói {u.Contract_period} tháng
-                            <div className="ad-notif-meta">Bấm để tới danh sách và duyệt</div>
+                            <div className="ad-notif-meta">Thị trường {marketName[regionOf(u)]} · bấm để tới danh sách và duyệt</div>
                           </span>
                         </button>
                       ))
@@ -280,22 +303,29 @@ function App() {
         </header>
 
         <main className="ad-content">
-          {adminTab === 'prediction' ? (
-            <>
-              <Dashboard refreshFlag={refreshFlag} onCardClick={setActiveFilter} activeFilter={activeFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />
+          {adminTab === 'overview' && (
+            <Overview refreshFlag={refreshFlag} onOpenMarket={(region, filter) => openTab(region, filter)} />
+          )}
+
+          {/* Trang VN và Quốc tế dùng CHUNG component, chỉ khác region */}
+          {isMarketTab && (
+            <div key={adminTab}>
+              <Dashboard region={adminTab} refreshFlag={refreshFlag} onCardClick={setActiveFilter} activeFilter={activeFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />
 
               <div className="ad-workspace">
-                <section className="ad-panel ad-form-panel" id="customer-form-panel">
-                  <CustomerForm editingCustomer={editingCustomer} setEditingCustomer={setEditingCustomer} onSuccess={handleRefresh} />
+                <section className="ad-panel ad-form-panel" id="customer-form-panel"
+                  style={{ maxHeight: 'calc(100vh - 100px)', overflowY: 'auto' }}>
+                  <CustomerForm region={adminTab} editingCustomer={editingCustomer} setEditingCustomer={setEditingCustomer} onSuccess={handleRefresh} />
                 </section>
                 <section className="ad-panel ad-table-panel">
-                  <CustomerList setEditingCustomer={setEditingCustomer} refreshFlag={refreshFlag} onSuccess={handleRefresh} externalFilter={activeFilter} onFilterChange={setActiveFilter} dateFilter={dateFilter} />
+                  <CustomerList region={adminTab} setEditingCustomer={setEditingCustomer} refreshFlag={refreshFlag} onSuccess={handleRefresh} externalFilter={activeFilter} onFilterChange={setActiveFilter} dateFilter={dateFilter} />
                 </section>
               </div>
-            </>
-          ) : (
-            <ModelMetricsDashboard />
+            </div>
           )}
+
+          {/* Dự báo trong Admin (3.1) — có nút "Lưu vào hệ thống" (3.2) và "Lưu tất cả" (3.3) */}
+          {adminTab === 'predict' && <PredictWizard embedded />}
         </main>
       </div>
     </div>

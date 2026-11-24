@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { CloudUpload, PenLine, Trash2, BellRing, CircleCheck, Cpu, Search, Clock, Inbox, ShieldCheck } from 'lucide-react';
+import { CloudUpload, PenLine, Trash2, BellRing, CircleCheck, Search, Clock, Inbox, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { API_URL } from '../config';
+import { regionOf, isDuplicateConflict } from './predict/utils';
+import { DuplicateDialog } from './predict/SaveToSystem';
 
 const RISK_TABS = [
   { value: 'All', label: 'Tất cả', tone: 'tone-all' },
@@ -9,29 +12,36 @@ const RISK_TABS = [
   { value: 'Trung bình', label: 'Trung bình', tone: 'tone-mid' },
   { value: 'Thấp', label: 'An toàn', tone: 'tone-low' },
 ];
+const MARKET_NAME = { vn: 'Việt Nam', global: 'Quốc tế' };
+const PAGE = 200; // hiện tối đa 200 dòng một lần cho nhẹ, bấm "Xem thêm" để hiện tiếp
 
-// Cùng ngưỡng với bản cũ: >=70 cao, >50 trung bình, còn lại thấp; chờ duyệt = trung tính
-const toneOf = (cus) => {
-  if (cus.status === 'Chờ duyệt') return 'tone-pend';
-  const p = cus.prediction?.probability_percent || 0;
-  if (p >= 70) return 'tone-high';
-  if (p > 50) return 'tone-mid';
-  return 'tone-low';
-};
+const LEVEL_TONE = { 'Cao': 'tone-high', 'Trung bình': 'tone-mid', 'Thấp': 'tone-low' };
+const isPendingOf = (cus) => cus.status === 'Chờ duyệt' || !LEVEL_TONE[cus.prediction?.risk_level];
+// Màu theo đúng mức rủi ro đã lưu (Cao >= 70%, Trung bình 50–70%, Thấp < 50%); chờ duyệt = trung tính
+const toneOf = (cus) => (isPendingOf(cus) ? 'tone-pend' : LEVEL_TONE[cus.prediction.risk_level]);
 
-export default function CustomerList({ setEditingCustomer, refreshFlag, onSuccess, externalFilter, onFilterChange, dateFilter }) {
+/**
+ * Danh sách hội viên của MỘT thị trường.
+ * Props: region ('vn' | 'global', mặc định 'vn' — lấy từ menu), setEditingCustomer, refreshFlag, onSuccess,
+ *        externalFilter, onFilterChange, dateFilter
+ * - Nút "Tải lên CSV": lưu thẳng vào thị trường của trang. Có tên trùng -> hỏi Cập nhật / Bỏ qua (luật trùng).
+ * - Chỉ còn 1 mô hình -> bỏ ô chọn thuật toán.
+ */
+export default function CustomerList({ region = 'vn', setEditingCustomer, refreshFlag, onSuccess, externalFilter, onFilterChange, dateFilter }) {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-
-  // Quản lý mô hình AI đang được chọn để dự báo
-  const [modelType, setModelType] = useState('logistic');
+  const [limit, setLimit] = useState(PAGE);
+  const [conflict, setConflict] = useState(null);    // dữ liệu 409 (tên trùng) đang chờ chọn
+  const pendingFile = useRef(null);                   // file CSV đang chờ chọn Cập nhật / Bỏ qua
+  const market = MARKET_NAME[region];
 
   useEffect(() => {
     const fetchCustomers = async () => {
       try {
-        const response = await axios.get('http://localhost:3001/api/customers');
-        setCustomers(response.data);
+        const response = await axios.get(`${API_URL}/customers`);
+        setCustomers(response.data.filter((c) => regionOf(c) === region));
       } catch (error) {
         console.error("Lỗi:", error);
         // Hết phiên -> App đã báo và chuyển về đăng nhập, không báo lỗi trùng
@@ -46,17 +56,17 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
       }
     };
     fetchCustomers();
-  }, [refreshFlag]);
+  }, [refreshFlag, region]);
 
   const handleDelete = async (id, name) => {
     if (window.confirm(`Xác nhận xóa khách hàng "${name}"?`)) {
       try {
-        await axios.delete(`http://localhost:3001/api/customers/${id}`);
+        await axios.delete(`${API_URL}/customers/${id}`);
         onSuccess();
         toast.success(`Đã xóa khách hàng ${name} thành công!`);
       } catch (error) {
         console.error("Lỗi khi xóa:", error);
-        toast.error('Lỗi khi xóa khách hàng!');
+        if (!error.sessionExpired) toast.error(error.response?.data?.error || 'Lỗi khi xóa khách hàng!');
       }
     }
   };
@@ -65,62 +75,71 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
     const msg = window.prompt(`Nhập lời nhắc nhở cho "${name}":`, "Bạn đã lâu không đến phòng tập. Đừng bỏ cuộc nhé, hãy quay lại luyện tập để đạt kết quả tốt nhất!");
     if (msg) {
       try {
-        await axios.post(`http://localhost:3001/api/customers/${id}/notify`, { message: msg });
+        await axios.post(`${API_URL}/customers/${id}/notify`, { message: msg });
         toast.success(`Đã gửi thông báo đến ${name} thành công!`);
         onSuccess();
       } catch (error) {
         console.error("Lỗi khi gửi thông báo:", error);
-        toast.error("Lỗi khi gửi thông báo.");
+        if (!error.sessionExpired) toast.error("Lỗi khi gửi thông báo.");
       }
     }
   };
 
   const handleApprove = async (id, name) => {
-    const modelName = modelType === 'logistic' ? 'Logistic Regression' : 'Random Forest';
-    if (window.confirm(`Xác nhận duyệt hợp đồng cho "${name}" và chạy phân tích AI bằng thuật toán [${modelName}]?`)) {
-      const loadingToast = toast.loading(`Đang phân tích rủi ro bằng ${modelName}...`);
+    if (window.confirm(`Xác nhận duyệt hợp đồng cho "${name}" và chạy phân tích rủi ro bằng AI?`)) {
+      const loadingToast = toast.loading('Đang phân tích rủi ro...');
       try {
-        await axios.put(`http://localhost:3001/api/customers/${id}/approve`, { model_type: modelType });
+        await axios.put(`${API_URL}/customers/${id}/approve`, {});
         onSuccess();
-        toast.success(`Đã duyệt và đánh giá rủi ro thành công!`, { id: loadingToast });
+        toast.success('Đã duyệt và đánh giá rủi ro thành công!', { id: loadingToast });
       } catch (error) {
         console.error("Lỗi khi duyệt:", error);
-        toast.error(error.response?.data?.error || 'Lỗi khi duyệt khách hàng!', { id: loadingToast });
+        if (error.sessionExpired) toast.dismiss(loadingToast);
+        else toast.error(error.response?.data?.error || 'Lỗi khi duyệt khách hàng!', { id: loadingToast });
       }
     }
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
+  /** Gửi file CSV. onDuplicate: undefined (lần đầu) | 'update' | 'skip' (sau khi người dùng chọn) */
+  const sendCsv = async (file, onDuplicate) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('model_type', modelType);
+    formData.append('region', region);
+    if (onDuplicate) formData.append('onDuplicate', onDuplicate);
 
-    const modelName = modelType === 'logistic' ? 'Logistic Regression' : 'Random Forest';
-    const confirmUpload = window.confirm(`Bạn có chắc chắn muốn tải lên file "${file.name}" để hệ thống AI tự động phân tích rủi ro bằng [${modelName}] không?`);
-    if (!confirmUpload) {
-      e.target.value = null;
-      return;
-    }
-
-    const loadingToast = toast.loading(`Đang xử lý file CSV và chạy AI ${modelName}...`);
-
+    const loadingToast = toast.loading(`Đang xử lý file CSV và chấm điểm rủi ro (thị trường ${market})...`);
+    setUploading(true);
     try {
-      setLoading(true);
-      await axios.post('http://localhost:3001/api/customers/upload-csv', formData, {
+      const res = await axios.post(`${API_URL}/customers/upload-csv`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      toast.success(`Đã xử lý file CSV và phân tích bằng ${modelName} thành công!`, { id: loadingToast });
+      setConflict(null);
+      pendingFile.current = null;
+      toast.success(res.data.message || 'Đã xử lý file CSV thành công!', { id: loadingToast, duration: 6000 });
+      if (res.data.rowErrors?.length) console.table(res.data.rowErrors); // chi tiết dòng lỗi (F12 > Console)
       onSuccess();
     } catch (error) {
       console.error("Lỗi tải lên CSV:", error);
-      toast.error(error.response?.data?.error || 'Lỗi khi tải lên file CSV!', { id: loadingToast });
+      if (isDuplicateConflict(error)) {
+        toast.dismiss(loadingToast);
+        pendingFile.current = file;
+        setConflict(error.response.data);   // mở hộp thoại Cập nhật / Bỏ qua — CHƯA lưu gì
+      } else if (error.sessionExpired) {
+        toast.dismiss(loadingToast);
+      } else {
+        toast.error(error.response?.data?.error || 'Lỗi khi tải lên file CSV!', { id: loadingToast, duration: 6000 });
+      }
     } finally {
-      setLoading(false);
-      e.target.value = null;
+      setUploading(false);
     }
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    e.target.value = null; // cho phép chọn lại cùng 1 file
+    if (!file) return;
+    const ok = window.confirm(`Tải lên file "${file.name}" và LƯU NGAY vào danh sách hội viên ${market}?\n\nFile cần có cột fullName và 7 cột chỉ số. Muốn xem kết quả trước khi lưu, hãy dùng mục "Dự báo".`);
+    if (ok) sendCsv(file);
   };
 
   // Sửa → đẩy dữ liệu lên form và cuộn tới form (hữu ích khi màn hình hẹp, form nằm trên bảng)
@@ -129,10 +148,11 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
     document.getElementById('customer-form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const term = searchTerm.trim().toLowerCase();
   const filteredCustomers = customers.filter(cus => {
-    const matchSearch = cus.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                        (cus.actualPhoneNumber && cus.actualPhoneNumber.includes(searchTerm));
-    const matchRisk = externalFilter === 'All' || (cus.prediction?.risk_level === externalFilter);
+    const matchSearch = !term || (cus.fullName || '').toLowerCase().includes(term) ||
+                        (cus.actualPhoneNumber && cus.actualPhoneNumber.includes(searchTerm.trim()));
+    const matchRisk = externalFilter === 'All' || (!isPendingOf(cus) && cus.prediction?.risk_level === externalFilter);
 
     let matchDate = true;
     if (dateFilter === '30days') {
@@ -145,6 +165,7 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
   });
 
   const pendingCount = customers.filter(c => c.status === 'Chờ duyệt').length;
+  const shown = filteredCustomers.slice(0, limit);
 
   if (loading) {
     return (
@@ -164,28 +185,27 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
 
   return (
     <div id="customer-list-section">
+      {conflict && (
+        <DuplicateDialog lang="vi" market={market} conflict={conflict} busy={uploading}
+          onChoose={(mode) => { if (pendingFile.current) sendCsv(pendingFile.current, mode); }}
+          onCancel={() => { setConflict(null); pendingFile.current = null; toast('Đã hủy, không có hội viên nào được lưu.'); }} />
+      )}
+
       {/* ---------- Toolbar ---------- */}
       <div className="ad-toolbar">
         <div className="ad-toolbar-row">
           <div>
-            <h3 className="ad-h3">Danh sách hội viên <span className="ad-count ad-num">{filteredCustomers.length}/{customers.length}</span></h3>
+            <h3 className="ad-h3">Danh sách hội viên {market} <span className="ad-count ad-num">{filteredCustomers.length}/{customers.length}</span></h3>
             <p className="ad-h3-sub">
               {pendingCount > 0 ? `${pendingCount} hội viên đang chờ duyệt và chấm điểm rủi ro` : 'Tất cả hội viên đã được chấm điểm rủi ro'}
             </p>
           </div>
 
           <div className="ad-actions">
-            <label className="ad-model-pick" title="Mô hình dùng khi duyệt và khi tải CSV">
-              <Cpu size={15} />
-              <select className="ad-select" value={modelType} onChange={(e) => setModelType(e.target.value)} aria-label="Mô hình AI">
-                <option value="logistic">Logistic Regression</option>
-                <option value="random_forest">Random Forest</option>
-              </select>
-            </label>
-
-            <label className="ad-btn" style={{ cursor: 'pointer' }}>
-              <CloudUpload size={15} /> Tải lên CSV
-              <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
+            <label className={`ad-btn ${uploading ? 'is-disabled' : ''}`} style={{ cursor: uploading ? 'wait' : 'pointer', opacity: uploading ? 0.6 : 1 }}
+              title={`Lưu thẳng vào danh sách ${market}. Cần cột fullName + 7 cột chỉ số.`}>
+              <CloudUpload size={15} /> {uploading ? 'Đang xử lý...' : 'Tải lên CSV'}
+              <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading} />
             </label>
           </div>
         </div>
@@ -193,12 +213,13 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
         <div className="ad-toolbar-row">
           <div className="ad-search">
             <Search size={15} />
-            <input className="ad-input" type="text" placeholder="Tìm theo tên hoặc số điện thoại" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} aria-label="Tìm hội viên" />
+            <input className="ad-input" type="text" placeholder="Tìm theo tên hoặc số điện thoại" value={searchTerm}
+              onChange={(e) => { setSearchTerm(e.target.value); setLimit(PAGE); }} aria-label="Tìm hội viên" />
           </div>
 
           <div className="ad-tabs" role="group" aria-label="Lọc theo mức rủi ro">
             {RISK_TABS.map(t => (
-              <button key={t.value} className={`ad-tab ${t.tone}`} aria-pressed={externalFilter === t.value} onClick={() => onFilterChange(t.value)}>
+              <button key={t.value} className={`ad-tab ${t.tone}`} aria-pressed={externalFilter === t.value} onClick={() => { onFilterChange(t.value); setLimit(PAGE); }}>
                 {t.value !== 'All' && <span className="ad-tab-dot" />}
                 {t.label}
               </button>
@@ -230,13 +251,13 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
                 </td>
               </tr>
             ) : (
-              filteredCustomers.map((cus) => {
+              shown.map((cus) => {
                 const riskPrc = cus.prediction?.probability_percent || 0;
                 const isPending = cus.status === 'Chờ duyệt';
+                const notScored = isPendingOf(cus);
                 const tone = toneOf(cus);
-                const initials = cus.fullName.split(' ').map(n => n[0]).join('').substring(0, 3).toUpperCase();
-                const usedModel = cus.prediction?.model_used === 'Random Forest' ? 'RF' : (cus.prediction?.model_used === 'Logistic Regression' ? 'LR' : '');
-                const needsCare = cus.prediction?.risk_level === 'Cao' || cus.prediction?.risk_level === 'Trung bình';
+                const initials = (cus.fullName || '?').split(' ').map(n => n[0]).join('').substring(0, 3).toUpperCase();
+                const needsCare = !notScored && (cus.prediction.risk_level === 'Cao' || cus.prediction.risk_level === 'Trung bình');
 
                 return (
                   <tr key={cus._id} className={isPending ? 'is-pending' : undefined}>
@@ -262,14 +283,13 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
                         <div className="ad-risk-top">
                           <span className="ad-badge">
                             <span className="ad-badge-dot" />
-                            {isPending ? 'Chưa dự báo' : (cus.prediction?.risk_level || 'Chưa đánh giá')}
+                            {notScored ? 'Chưa dự báo' : cus.prediction.risk_level}
                           </span>
-                          {isPending
+                          {notScored
                             ? <span className="ad-wait">Chờ đánh giá</span>
                             : <span className="ad-meter-val ad-num">{riskPrc}%</span>}
-                          {!isPending && usedModel && <span className="ad-model-tag" title={cus.prediction?.model_used}>{usedModel}</span>}
                         </div>
-                        <div className="ad-meter-track"><div className="ad-meter-fill" style={{ width: `${isPending ? 0 : Math.min(riskPrc, 100)}%` }} /></div>
+                        <div className="ad-meter-track"><div className="ad-meter-fill" style={{ width: `${notScored ? 0 : Math.min(riskPrc, 100)}%` }} /></div>
                       </div>
                     </td>
 
@@ -296,6 +316,13 @@ export default function CustomerList({ setEditingCustomer, refreshFlag, onSucces
             )}
           </tbody>
         </table>
+        {filteredCustomers.length > limit && (
+          <div style={{ padding: 16, textAlign: 'center' }}>
+            <button className="ad-btn" onClick={() => setLimit(limit + PAGE)}>
+              Xem thêm {Math.min(PAGE, filteredCustomers.length - limit)} hội viên (đang hiện {limit}/{filteredCustomers.length})
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

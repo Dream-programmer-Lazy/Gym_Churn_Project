@@ -2,16 +2,17 @@
  * ROUTE CÔNG KHAI CHO LANDING PAGE — CHẾ ĐỘ DÙNG THỬ (KHÔNG LƯU DỮ LIỆU)
  * ---------------------------------------------------------------------
  * GET  /api/predict/model-info?region=vn&lang=vi -> khoảng giá trị, gói tập, đơn vị tiền (dựng form)
- * POST /api/predict                              -> dự báo 1 hội viên  (body: region, model_type, lang, 13 biến)
- * POST /api/predict/csv                          -> dự báo cả file CSV (form-data: file, region, model_type, lang)
+ * POST /api/predict                              -> dự báo 1 hội viên  (body: region, lang, 7 cột)
+ * POST /api/predict/csv                          -> dự báo cả file CSV (form-data: file, region, lang)
  *
- * Không cần đăng nhập. Muốn LƯU vào hệ thống thì frontend gọi POST /api/customers (cần token).
+ * Chỉ còn 1 mô hình (Logistic Regression cân bằng, 7 cột). CSV chỉ bắt buộc 7 cột, cột thừa bỏ qua.
+ * Không cần đăng nhập. Muốn LƯU vào hệ thống thì frontend gọi /api/customers (cần token Admin/Staff).
  */
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const {
-    AiError, normalizeRegion, normalizeModelType, normalizeLang, pickFeatures,
+    AiError, normalizeRegion, normalizeLang, pickFeatures,
     callFlask, predictOne, predictBatch, parseCsv, sendError,
 } = require('../utils/ai');
 
@@ -39,9 +40,8 @@ router.post('/', async (req, res) => {
     try {
         const body = req.body || {};
         const region = normalizeRegion(body.region);
-        const modelType = normalizeModelType(body.model_type);
         const lang = normalizeLang(body.lang);
-        res.status(200).json(await predictOne(pickFeatures(body), region, modelType, lang));
+        res.status(200).json(await predictOne(pickFeatures(body), region, lang));
     } catch (error) {
         sendError(res, error, 'Lỗi khi dự báo.');
     }
@@ -53,7 +53,6 @@ router.post('/csv', uploadCsv, async (req, res) => {
     try {
         if (!req.file) throw new AiError(400, en ? 'Please choose a CSV file.' : 'Vui lòng chọn một file CSV.');
         const region = normalizeRegion(req.body.region);
-        const modelType = normalizeModelType(req.body.model_type);
         const { rows, missingColumns } = parseCsv(req.file.buffer);
 
         if (missingColumns.length) {
@@ -67,17 +66,19 @@ router.post('/csv', uploadCsv, async (req, res) => {
                 : `Chế độ dùng thử tối đa ${MAX_PUBLIC_ROWS} dòng (file có ${rows.length} dòng).`);
         }
 
-        const results = await predictBatch(rows.map(pickFeatures), region, modelType, lang);
+        const featureRows = rows.map(pickFeatures);
+        const results = await predictBatch(featureRows, region, lang);
         const summary = { total: rows.length, ok: 0, failed: 0, 'Cao': 0, 'Trung bình': 0, 'Thấp': 0 };
 
-        // Gắn lại số dòng thật trong file + họ tên để frontend hiển thị và xuất file kết quả
+        // Gắn lại số dòng thật trong file + họ tên để frontend hiển thị, xuất file kết quả và "Lưu tất cả"
         const merged = results.map((r, idx) => {
             const row = rows[idx];
             if (r.ok) { summary.ok += 1; summary[r.risk_level] += 1; } else { summary.failed += 1; }
             return {
                 line: row.__line,
                 fullName: row.fullName || '',
-                input: pickFeatures(row),
+                actualPhoneNumber: row.actualPhoneNumber || '',
+                input: featureRows[idx],
                 ...(r.ok
                     ? {
                         ok: true,
@@ -92,7 +93,7 @@ router.post('/csv', uploadCsv, async (req, res) => {
             };
         });
 
-        res.status(200).json({ region, lang: results.find((r) => r.ok)?.lang || lang, model_type: modelType, summary, results: merged });
+        res.status(200).json({ region, lang: results.find((r) => r.ok)?.lang || lang, summary, results: merged });
     } catch (error) {
         sendError(res, error, en ? 'Could not process the CSV file.' : 'Lỗi khi xử lý file CSV.');
     }

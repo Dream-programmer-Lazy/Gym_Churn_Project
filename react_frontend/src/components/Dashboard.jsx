@@ -3,8 +3,11 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from 'recharts';
 import { CalendarRange, Download } from 'lucide-react';
+import { API_URL } from '../config';
+import { FORMS, regionOf, downloadCsv } from './predict/utils';
 
-const COLORS = { high: '#e11d48', mid: '#f59e0b', low: '#10b981', bar: '#18181b' };
+const COLORS = { high: '#e11d48', mid: '#f59e0b', low: '#10b981', pend: '#a1a1aa', bar: '#18181b' };
+const MARKET_NAME = { vn: 'Việt Nam', global: 'Quốc tế' };
 
 // Tooltip dùng chung cho cả 2 biểu đồ
 function ChartTooltip({ active, payload, label }) {
@@ -19,17 +22,27 @@ function ChartTooltip({ active, payload, label }) {
 }
 
 const pct = (part, total) => (total ? ((part / total) * 100).toFixed(1) : '0.0');
+const isPending = (c) => c.status === 'Chờ duyệt' || !['Cao', 'Trung bình', 'Thấp'].includes(c.prediction?.risk_level);
 
-export default function Dashboard({ refreshFlag, onCardClick, activeFilter, dateFilter, setDateFilter }) {
-  const [stats, setStats] = useState({ total: 0, highRisk: 0, safe: 0, mediumRisk: 0, riskData: [], contractData: [] });
+/**
+ * Dashboard của MỘT thị trường (trang "Hội viên Việt Nam" hoặc "Hội viên Quốc tế").
+ * Props: region ('vn' | 'global', mặc định 'vn'), refreshFlag, onCardClick(filter), activeFilter, dateFilter, setDateFilter
+ * - Chỉ đếm hội viên có region trùng (hồ sơ cũ chưa có region được coi là 'vn').
+ * - Hội viên "Chờ duyệt" / chưa dự báo được đếm riêng, KHÔNG gộp vào "An toàn".
+ * - Biểu đồ gói tập theo đúng gói của thị trường (VN: 1/3/6/12, Quốc tế: 1/6/12).
+ */
+export default function Dashboard({ region = 'vn', refreshFlag, onCardClick, activeFilter, dateFilter, setDateFilter }) {
+  const [stats, setStats] = useState({ total: 0, highRisk: 0, safe: 0, mediumRisk: 0, pending: 0, riskData: [], contractData: [] });
   const [rawCustomers, setRawCustomers] = useState([]);
+  const form = FORMS[region];
+  const plans = form.plans;
 
   useEffect(() => {
     let isMounted = true;
     const fetchStats = async () => {
       try {
-        const response = await axios.get('http://localhost:3001/api/customers');
-        let customers = response.data;
+        const response = await axios.get(`${API_URL}/customers`);
+        let customers = response.data.filter((c) => regionOf(c) === region);
 
         if (dateFilter === '30days') {
           const thirtyDaysAgo = new Date();
@@ -39,31 +52,27 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
 
         if (isMounted) {
           setRawCustomers(customers);
-          let high = 0, medium = 0, low = 0;
-          let month1 = 0, month6 = 0, month12 = 0;
+          let high = 0, medium = 0, low = 0, pending = 0;
+          const byPlan = Object.fromEntries(plans.map((m) => [m, 0]));
 
           customers.forEach(cus => {
-            if (cus.prediction?.risk_level === 'Cao') high++;
-            else if (cus.prediction?.risk_level === 'Trung bình') medium++;
+            if (isPending(cus)) pending++;
+            else if (cus.prediction.risk_level === 'Cao') high++;
+            else if (cus.prediction.risk_level === 'Trung bình') medium++;
             else low++;
 
-            if (cus.Contract_period === 1) month1++;
-            else if (cus.Contract_period === 6) month6++;
-            else if (cus.Contract_period === 12) month12++;
+            if (cus.Contract_period in byPlan) byPlan[cus.Contract_period]++;
           });
 
           setStats({
-            total: customers.length, highRisk: high, safe: low, mediumRisk: medium,
+            total: customers.length, highRisk: high, safe: low, mediumRisk: medium, pending,
             riskData: [
               { key: 'Cao', name: 'Nguy cơ cao', value: high, color: COLORS.high },
               { key: 'Trung bình', name: 'Nguy cơ trung bình', value: medium, color: COLORS.mid },
-              { key: 'Thấp', name: 'Nguy cơ thấp', value: low, color: COLORS.low }
+              { key: 'Thấp', name: 'An toàn', value: low, color: COLORS.low },
+              { key: 'pending', name: 'Chờ duyệt / chưa dự báo', value: pending, color: COLORS.pend },
             ],
-            contractData: [
-              { name: 'Gói 1 tháng', count: month1 },
-              { name: 'Gói 6 tháng', count: month6 },
-              { name: 'Gói 12 tháng', count: month12 }
-            ]
+            contractData: plans.map((m) => ({ name: `Gói ${m} tháng`, count: byPlan[m] })),
           });
         }
       } catch (error) {
@@ -73,42 +82,49 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
 
     fetchStats();
     return () => { isMounted = false; };
-  }, [refreshFlag, dateFilter]);
+  }, [refreshFlag, dateFilter, region, plans]);
 
   const handleExportCSV = () => {
     if (rawCustomers.length === 0) return toast.error("Không có dữ liệu để xuất báo cáo.");
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
-    csvContent += "Họ tên,SĐT,Tuổi,Gói tập (tháng),Tần suất tập/tuần,Thời gian gắn bó,Xác suất rời bỏ (%),Mức độ rủi ro,Mô hình AI,Trạng thái\n";
-    rawCustomers.forEach(cus => {
-      const row = [`"${cus.fullName}"`, `"${cus.actualPhoneNumber || ''}"`, cus.Age, cus.Contract_period, cus.Avg_class_frequency_current_month, cus.Lifetime, cus.prediction?.probability_percent || 0, `"${cus.prediction?.risk_level || 'Chưa phân tích'}"`, `"${cus.prediction?.model_used || 'Chưa xác định'}"`, `"${cus.status || 'Đang hoạt động'}"`];
-      csvContent += row.join(",") + "\n";
-    });
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Bao_Cao_Hoi_Vien_${dateFilter}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    toast.success(`Đã xuất báo cáo ${rawCustomers.length} hội viên.`);
+    const moneyUnit = region === 'vn' ? 'VNĐ' : 'USD';
+    const header = [
+      'Họ tên', 'SĐT', 'Tuổi', 'Gói tập (tháng)', 'Số tháng còn lại', 'Thời gian đã tập (tháng)',
+      'Buổi/tuần từ khi đăng ký', 'Buổi/tuần tháng gần nhất', `Chi tiêu thêm/tháng (${moneyUnit})`,
+      'Xác suất rời bỏ (%)', 'Mức độ rủi ro', 'Trạng thái',
+    ];
+    const rows = rawCustomers.map(cus => [
+      cus.fullName, cus.actualPhoneNumber || '', cus.Age, cus.Contract_period, cus.Month_to_end_contract, cus.Lifetime,
+      cus.Avg_class_frequency_total, cus.Avg_class_frequency_current_month,
+      // Mô hình VN lưu tiền theo nghìn VNĐ -> nhân 1.000 để ra đồng
+      Math.round((Number(cus.Avg_additional_charges_total) || 0) * form.money.modelScale * 100) / 100,
+      isPending(cus) ? '' : cus.prediction?.probability_percent,
+      isPending(cus) ? 'Chưa dự báo' : cus.prediction?.risk_level,
+      cus.status || 'Đang hoạt động',
+    ]);
+    downloadCsv(`Bao_Cao_Hoi_Vien_${region}_${dateFilter}.csv`, header, rows);
+    toast.success(`Đã xuất báo cáo ${rawCustomers.length} hội viên ${MARKET_NAME[region]}.`);
   };
 
   const kpis = [
-    { key: 'All', tone: 'tone-all', label: 'Tổng hội viên', value: stats.total, foot: dateFilter === '30days' ? 'Đăng ký trong 30 ngày qua' : 'Toàn bộ dữ liệu' },
+    { key: 'All', tone: 'tone-all', label: 'Tổng hội viên', value: stats.total,
+      foot: <>{dateFilter === '30days' ? 'Đăng ký trong 30 ngày qua' : 'Toàn bộ dữ liệu'}{stats.pending ? <> · <b>{stats.pending}</b> chờ duyệt</> : null}</> },
     { key: 'Cao', tone: 'tone-high', label: 'Nguy cơ cao', value: stats.highRisk, foot: <><b>{pct(stats.highRisk, stats.total)}%</b> cần can thiệp ngay</> },
     { key: 'Trung bình', tone: 'tone-mid', label: 'Nguy cơ trung bình', value: stats.mediumRisk, foot: <><b>{pct(stats.mediumRisk, stats.total)}%</b> nên theo dõi</> },
     { key: 'Thấp', tone: 'tone-low', label: 'An toàn', value: stats.safe, foot: <><b>{pct(stats.safe, stats.total)}%</b> tương tác ổn định</> },
   ];
 
   const is30 = dateFilter === '30days';
+  const filterOf = (key) => (key === 'pending' ? 'All' : key);
 
   return (
     <>
       {/* ---------- Tiêu đề trang + hành động ---------- */}
       <div className="ad-page-head">
         <div>
-          <h1 className="ad-h1">Tổng quan rủi ro rời bỏ</h1>
-          <p className="ad-sub">Bấm vào từng nhóm rủi ro để lọc danh sách hội viên bên dưới.</p>
+          <h1 className="ad-h1">Hội viên {MARKET_NAME[region]}</h1>
+          <p className="ad-sub">
+            {region === 'vn' ? 'Gói 1, 3, 6, 12 tháng · tiền VNĐ.' : 'Gói 1, 6, 12 tháng · tiền USD.'} Bấm vào từng nhóm rủi ro để lọc danh sách bên dưới.
+          </p>
         </div>
         <div className="ad-actions">
           <button className={`ad-btn ${is30 ? 'is-on' : ''}`} aria-pressed={is30} onClick={() => setDateFilter(is30 ? 'all' : '30days')}>
@@ -141,7 +157,7 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
                 style={{ flexGrow: d.value, background: d.color }}
                 title={`${d.name}: ${d.value} (${pct(d.value, stats.total)}%)`}
                 aria-label={`Lọc ${d.name}`}
-                onClick={() => onCardClick(d.key)}
+                onClick={() => onCardClick(filterOf(d.key))}
               />
             ))}
           </div>
@@ -158,7 +174,7 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
           <div className="ad-panel-head">
             <div>
               <h3 className="ad-h3">Tỷ lệ nguy cơ rời bỏ</h3>
-              <p className="ad-h3-sub">Phân loại bởi mô hình AI</p>
+              <p className="ad-h3-sub">Phân loại bởi mô hình AI thị trường {MARKET_NAME[region]}</p>
             </div>
           </div>
           <div className="ad-chart-body">
@@ -180,7 +196,7 @@ export default function Dashboard({ refreshFlag, onCardClick, activeFilter, date
 
               <div className="ad-legend">
                 {stats.riskData.map(d => (
-                  <button key={d.key} className="ad-legend-row" aria-pressed={activeFilter === d.key} onClick={() => onCardClick(d.key)}>
+                  <button key={d.key} className="ad-legend-row" aria-pressed={activeFilter === d.key} onClick={() => onCardClick(filterOf(d.key))}>
                     <span className="ad-legend-dot" style={{ background: d.color }} />
                     <span>{d.name}</span>
                     <span className="ad-legend-val ad-num">{d.value.toLocaleString('vi-VN')}</span>

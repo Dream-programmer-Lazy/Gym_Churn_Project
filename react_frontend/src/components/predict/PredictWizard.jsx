@@ -3,26 +3,31 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Keyboard, FileSpreadsheet, LoaderCircle, CircleAlert, MapPin, Globe } from 'lucide-react';
 import { t, pick } from './i18n';
-import { API_BASE, FORMS, FEATURES, initialValues, toPayload } from './utils';
+import { API_BASE, FORMS, FEATURES, initialValues, toPayload, formForMode } from './utils';
 import ManualForm from './ManualForm';
 import CsvDropzone from './CsvDropzone';
 import ResultCard from './ResultCard';
 import CsvResults from './CsvResults';
+import SaveDialog from './SaveToSystem';
 import '../../styles/wizard.css';
+import '../../styles/predict-admin.css';
 
 const REGION_ICON = { vn: MapPin, global: Globe };
 
 /**
- * Trang dự báo dùng thử (không lưu dữ liệu).
- * Luồng: Thị trường -> Cách nhập -> Dữ liệu -> Kết quả.  Mỗi thị trường có form riêng (forms/).
- * Props: onBack() -> quay về Landing Page
+ * Trang dự báo rời bỏ. Luồng: Thị trường -> Cách nhập -> Dữ liệu -> Kết quả.  Mỗi thị trường có form riêng (forms/).
+ * Chỉ còn 1 mô hình: Logistic Regression, 7 chỉ số (không còn nút chọn thuật toán).
+ *
+ * Hai chế độ (phương án A):
+ *   - Landing Page (mặc định): dùng thử công khai, KHÔNG lưu. Props: onBack() -> quay về Landing Page
+ *   - embedded (trong Admin)  : bỏ header Landing, hỏi thêm số điện thoại, có nút "Lưu vào hệ thống" (3.2)
+ *                               và "Lưu tất cả" cho CSV (3.3). Cần đã đăng nhập Admin/Staff.
  */
-export default function PredictWizard({ onBack }) {
+export default function PredictWizard({ onBack, embedded = false }) {
   const [lang, setLang] = useState('vi');
   const [step, setStep] = useState('region');           // region | method | input | result
   const [region, setRegion] = useState(null);
   const [method, setMethod] = useState(null);           // manual | csv
-  const [modelType, setModelType] = useState('logistic');
 
   const [modelInfo, setModelInfo] = useState(null);
   const [loadingRegion, setLoadingRegion] = useState(null);
@@ -36,18 +41,22 @@ export default function PredictWizard({ onBack }) {
 
   const [csvFile, setCsvFile] = useState(null);
   const [csvData, setCsvData] = useState(null);
+  const [csvRun, setCsvRun] = useState(0);              // tăng mỗi lần tải file mới -> làm mới trạng thái "đã lưu"
 
-  const form = region ? FORMS[region] : null;
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [savedText, setSavedText] = useState('');
+
+  // Trang công khai không hỏi các câu "adminOnly" (vd. số điện thoại)
+  const form = region ? formForMode(FORMS[region], embedded) : null;
 
   /* ---------- gọi API ---------- */
   const requestPredict = (useLang) =>
-    axios.post(API_BASE, { ...toPayload(form, values), region, model_type: modelType, lang: useLang });
+    axios.post(API_BASE, { ...toPayload(form, values), region, lang: useLang });
 
   const requestCsv = (file, useLang, onProgress) => {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('region', region);
-    fd.append('model_type', modelType);
     fd.append('lang', useLang);
     return axios.post(`${API_BASE}/csv?lang=${useLang}`, fd, {
       onUploadProgress: (e) => { if (e.total && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); },
@@ -78,10 +87,11 @@ export default function PredictWizard({ onBack }) {
       setRegion(r);
       setLang(nextLang);
       setModelInfo(res.data);
-      setValues(initialValues(FORMS[r], res.data));   // form mới hoàn toàn cho thị trường mới
+      setValues(initialValues(formForMode(FORMS[r], embedded)));   // form mới hoàn toàn cho thị trường mới
       setResult(null);
       setCsvData(null);
       setServerErrors({});
+      setSavedText('');
       setStep('method');
     } catch (err) {
       setInfoError(err.response?.data?.error || t(lang, 'serverDown'));
@@ -98,6 +108,7 @@ export default function PredictWizard({ onBack }) {
     try {
       const res = await requestPredict(lang);
       setResult(res.data);
+      setSavedText('');                              // kết quả mới -> chưa lưu
       setStep('result');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
@@ -117,29 +128,50 @@ export default function PredictWizard({ onBack }) {
     const res = await requestCsv(file, lang, onProgress);
     setCsvFile(file);
     setCsvData(res.data);
+    setCsvRun((n) => n + 1);
     setStep('result');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const newManual = () => {
-    setValues(initialValues(form, modelInfo));
+    setValues(initialValues(form));
     setResult(null);
+    setSavedText('');
     setFormStart(0);
     setStep('input');
   };
 
+  const onSaved = ({ mode, customer }) => {
+    const name = customer?.fullName || values.fullName || '';
+    const text = t(lang, mode === 'new' ? 'savedNew' : 'savedAttach', { name });
+    setSaveOpen(false);
+    setSavedText(text);
+    toast.success(text);
+  };
+
+  const langSwitch = (
+    <div className="pw-lang" role="radiogroup" aria-label="Language">
+      <button type="button" role="radio" aria-checked={lang === 'vi'} onClick={() => changeLang('vi')}>Tiếng Việt</button>
+      <button type="button" role="radio" aria-checked={lang === 'en'} onClick={() => changeLang('en')}>English</button>
+    </div>
+  );
+
   return (
-    <div className="pw-root">
-      <header className="pw-header">
-        <button type="button" className="pw-brand" onClick={onBack} aria-label={t(lang, 'home')}>POWER GYM<span>.AI</span></button>
-        <div className="pw-header-right">
-          <div className="pw-lang" role="radiogroup" aria-label="Language">
-            <button type="button" role="radio" aria-checked={lang === 'vi'} onClick={() => changeLang('vi')}>Tiếng Việt</button>
-            <button type="button" role="radio" aria-checked={lang === 'en'} onClick={() => changeLang('en')}>English</button>
-          </div>
-          <button type="button" className="pw-home" onClick={onBack}><ArrowLeft size={16} /> {t(lang, 'home')}</button>
+    <div className={`pw-root ${embedded ? 'is-embedded' : ''}`}>
+      {embedded ? (
+        <div className="pw-embed-bar">
+          <span className="pw-embed-note">{t(lang, 'modelNote')}</span>
+          {langSwitch}
         </div>
-      </header>
+      ) : (
+        <header className="pw-header">
+          <button type="button" className="pw-brand" onClick={onBack} aria-label={t(lang, 'home')}>POWER GYM<span>.AI</span></button>
+          <div className="pw-header-right">
+            {langSwitch}
+            <button type="button" className="pw-home" onClick={onBack}><ArrowLeft size={16} /> {t(lang, 'home')}</button>
+          </div>
+        </header>
+      )}
 
       <main className={`pw-main ${step === 'input' && method === 'manual' ? 'is-wide' : ''}`}>
         {/* ---------------- BƯỚC 1: THỊ TRƯỜNG ---------------- */}
@@ -156,6 +188,7 @@ export default function PredictWizard({ onBack }) {
                       {loadingRegion === f.region ? <LoaderCircle size={26} className="pw-spin" /> : <Icon size={26} />}
                     </span>
                     <span className="pw-choice-title">{pick(f.label, lang)}</span>
+                    <span className="pw-choice-text">{pick(f.plansText, lang)}</span>
                   </button>
                 );
               })}
@@ -169,17 +202,7 @@ export default function PredictWizard({ onBack }) {
           <section className="pw-pick">
             <button type="button" className="pw-market" onClick={() => setStep('region')}><i />{pick(form.label, lang)}</button>
             <h1 className="pw-h1 pw-pick-title">{t(lang, 'chooseMethod')}</h1>
-            <div className="pw-algo">
-              <span className="pw-algo-label">{t(lang, 'algorithm')}</span>
-              <div className="pw-seg" role="radiogroup" aria-label={t(lang, 'algorithm')}>
-                <button type="button" role="radio" aria-checked={modelType === 'logistic'} onClick={() => setModelType('logistic')}>
-                  Logistic Regression<small>{t(lang, 'algoLogistic')}</small>
-                </button>
-                <button type="button" role="radio" aria-checked={modelType === 'random_forest'} onClick={() => setModelType('random_forest')}>
-                  Random Forest<small>{t(lang, 'algoForest')}</small>
-                </button>
-              </div>
-            </div>
+            {!embedded && <p className="pw-model-note">{t(lang, 'modelNote')}</p>}
             <div className="pw-cards">
               <button type="button" className="pw-choice" onClick={() => chooseMethod('manual')}>
                 <span className="pw-choice-icon"><Keyboard size={26} /></span>
@@ -231,13 +254,26 @@ export default function PredictWizard({ onBack }) {
             lang={lang}
             onEdit={() => { setFormStart(form.sections.length - 1); setStep('input'); }}
             onNew={newManual}
+            onSave={embedded ? () => setSaveOpen(true) : undefined}
+            savedText={savedText}
           />
         )}
         {step === 'result' && method === 'csv' && csvData && (
-          <CsvResults data={csvData} fileName={csvFile?.name || 'data.csv'} lang={lang}
-            onNew={() => { setCsvData(null); setCsvFile(null); setStep('input'); }} />
+          <CsvResults
+            key={csvRun}
+            data={csvData}
+            fileName={csvFile?.name || 'data.csv'}
+            lang={lang}
+            canSave={embedded}
+            market={pick(form.label, lang)}
+            onNew={() => { setCsvData(null); setCsvFile(null); setStep('input'); }}
+          />
         )}
       </main>
+
+      {saveOpen && embedded && form && (
+        <SaveDialog form={form} values={values} lang={lang} onClose={() => setSaveOpen(false)} onSaved={onSaved} />
+      )}
     </div>
   );
 }

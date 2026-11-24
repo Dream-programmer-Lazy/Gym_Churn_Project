@@ -1,0 +1,15 @@
+# Thư viện cho Flask AI (flask_ai/)
+# Cài đặt:  pip install -r requirements.txt
+#
+# scikit-learn GHIM ĐÚNG phiên bản đã dùng để train vn_model.pkl / global_model.pkl.
+# Nếu đổi phiên bản scikit-learn thì phải chạy lại: python train_model.py
+
+flask>=3.0,<4
+flask-cors>=4.0
+scikit-learn==1.9.1
+pandas>=2.2
+numpy>=2.0
+joblib>=1.4
+
+# Chỉ dùng khi triển khai lên máy chủ Linux (Render/Railway); Windows tự bỏ qua dòng này
+gunicorn>=22.0; sys_platform != "win32"

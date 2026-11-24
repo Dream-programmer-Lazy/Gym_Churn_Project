@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { TriangleAlert, PenLine, RotateCcw, Download } from 'lucide-react';
+import { TriangleAlert, PenLine, RotateCcw, Download, DatabaseZap, CircleCheck } from 'lucide-react';
 import { t } from './i18n';
 import { fmtNum, shortName } from './utils';
 import Rich from './Rich';
@@ -9,8 +9,10 @@ const TONE = { 'Cao': 'high', 'Trung bình': 'mid', 'Thấp': 'low' };
 /**
  * Kết quả dự báo 1 hội viên.
  * Props: result (JSON từ /api/predict, đã đúng ngôn ngữ), fullName, lang, onEdit, onNew
+ *        onSave (tùy chọn) : chỉ truyền khi ở trong Admin -> hiện nút "Lưu vào hệ thống"
+ *        savedText (tùy chọn): đã lưu xong -> hiện huy hiệu xanh thay cho nút Lưu
  */
-export default function ResultCard({ result, fullName, lang, onEdit, onNew }) {
+export default function ResultCard({ result, fullName, lang, onEdit, onNew, onSave, savedText }) {
   const tone = TONE[result.risk_level] || 'low';
   const pct = Math.max(0, Math.min(100, result.probability_percent));
   const { high, medium } = result.thresholds || { high: 70, medium: 50 };
@@ -115,7 +117,10 @@ export default function ResultCard({ result, fullName, lang, onEdit, onNew }) {
       <div className="pw-result-actions">
         <button type="button" className="pw-btn" onClick={onEdit}><PenLine size={16} /> {t(lang, 'editAnswers')}</button>
         <button type="button" className="pw-btn" onClick={onNew}><RotateCcw size={16} /> {t(lang, 'newMember')}</button>
-        <button type="button" className="pw-btn is-primary" onClick={() => window.print()}><Download size={16} /> {t(lang, 'printPdf')}</button>
+        <button type="button" className={`pw-btn ${onSave ? '' : 'is-primary'}`} onClick={() => window.print()}><Download size={16} /> {t(lang, 'printPdf')}</button>
+        {onSave && (savedText
+          ? <span className="pw-saved" role="status"><CircleCheck size={16} /> {savedText}</span>
+          : <button type="button" className="pw-btn is-primary" onClick={onSave}><DatabaseZap size={16} /> {t(lang, 'saveToSystem')}</button>)}
       </div>
     </div>
   );

@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Download, RotateCcw, TriangleAlert, CircleAlert } from 'lucide-react';
+import axios from 'axios';
+import toast from 'react-hot-toast';
+import { Download, RotateCcw, TriangleAlert, CircleAlert, DatabaseZap, CircleCheck, LoaderCircle } from 'lucide-react';
 import { t } from './i18n';
-import { FEATURES, downloadCsv, fmtNum } from './utils';
+import { FEATURES, CUSTOMERS_API, downloadCsv, fmtNum, isDuplicateConflict } from './utils';
+import { DuplicateDialog } from './SaveToSystem';
 
 const TONE = { 'Cao': 'high', 'Trung bình': 'mid', 'Thấp': 'low' };
 const PAGE = 100;
@@ -9,12 +12,48 @@ const PAGE = 100;
 /**
  * Kết quả dự báo cả file CSV.
  * Props: data (JSON từ /api/predict/csv), fileName, lang, onNew()
+ *        canSave (tùy chọn, chỉ trong Admin): hiện nút "Lưu tất cả vào hệ thống"
+ *        market  : tên thị trường hiển thị (dùng trong câu hỏi xác nhận)
+ *
+ * "Lưu tất cả" (mục 3.3): gửi các dòng dự báo thành công tới POST /api/customers/bulk.
+ *   - Server trả 409 nếu có tên trùng -> hiện hộp thoại Cập nhật tất cả / Bỏ qua tất cả -> gửi lại.
+ *   - Dòng lỗi không gửi; dòng không có tên được server báo lỗi, không lưu.
  */
-export default function CsvResults({ data, fileName, lang, onNew }) {
+export default function CsvResults({ data, fileName, lang, onNew, canSave = false, market = '' }) {
   const [filter, setFilter] = useState('all');
   const [limit, setLimit] = useState(PAGE);
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(null);   // dữ liệu 409 (tên trùng) đang chờ người dùng chọn
+  const [savedText, setSavedText] = useState('');
   const { summary, results } = data;
   const badge = t(lang, 'levelBadge');
+
+  const okRows = useMemo(() => results.filter((r) => r.ok), [results]);
+  const hasNames = useMemo(() => okRows.some((r) => String(r.fullName || '').trim()), [okRows]);
+
+  const sendBulk = async (onDuplicate) => {
+    setSaving(true);
+    try {
+      const rows = okRows.map((r) => ({ line: r.line, fullName: r.fullName, actualPhoneNumber: r.actualPhoneNumber, input: r.input }));
+      const res = await axios.post(`${CUSTOMERS_API}/bulk`, { region: data.region, rows, ...(onDuplicate ? { onDuplicate } : {}) });
+      setConflict(null);
+      const d = res.data;
+      const text = t(lang, 'savedSummary', { created: d.created, updated: d.updated, skipped: d.skipped, failed: d.failed });
+      setSavedText(text);
+      toast.success(text, { duration: 6000 });
+    } catch (err) {
+      if (isDuplicateConflict(err)) { setConflict(err.response.data); return; }
+      if (!err.sessionExpired) toast.error(err.response?.data?.error || t(lang, 'serverDown'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveAll = () => {
+    if (!hasNames) { toast.error(t(lang, 'saveAllNeedName'), { duration: 6000 }); return; }
+    if (!window.confirm(t(lang, 'saveAllConfirm', { n: okRows.length, market }))) return;
+    sendBulk();
+  };
 
   const sorted = useMemo(() => {
     const list = filter === 'all' ? results
@@ -53,10 +92,27 @@ export default function CsvResults({ data, fileName, lang, onNew }) {
           </p>
         </div>
         <div className="pw-actions-row">
-          <button type="button" className="pw-btn" onClick={onNew}><RotateCcw size={16} /> {t(lang, 'otherFile')}</button>
-          <button type="button" className="pw-btn is-primary" onClick={exportResults}><Download size={16} /> {t(lang, 'downloadResult')}</button>
+          <button type="button" className="pw-btn" onClick={onNew} disabled={saving}><RotateCcw size={16} /> {t(lang, 'otherFile')}</button>
+          <button type="button" className={`pw-btn ${canSave ? '' : 'is-primary'}`} onClick={exportResults}><Download size={16} /> {t(lang, 'downloadResult')}</button>
+          {canSave && !savedText && (
+            <button type="button" className="pw-btn is-primary" onClick={saveAll} disabled={saving || okRows.length === 0}
+              title={hasNames ? undefined : t(lang, 'saveAllNeedName')}>
+              {saving ? <LoaderCircle size={16} className="pw-spin" /> : <DatabaseZap size={16} />} {saving ? t(lang, 'saving') : t(lang, 'saveAll')}
+            </button>
+          )}
         </div>
       </div>
+
+      {savedText && (
+        <p className="pw-saved" role="status" style={{ height: 'auto', padding: '8px 14px', margin: '0 0 14px' }}>
+          <CircleCheck size={16} /> {savedText}
+        </p>
+      )}
+
+      {conflict && (
+        <DuplicateDialog lang={lang} market={market} conflict={conflict} busy={saving}
+          onChoose={(mode) => sendBulk(mode)} onCancel={() => setConflict(null)} />
+      )}
 
       {summary.ok > 0 && (
         <div className="pw-dist" aria-hidden>

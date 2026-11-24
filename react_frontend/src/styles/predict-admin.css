@@ -1,0 +1,102 @@
+/* ==========================================================================
+   PREDICT — PHẦN DÙNG TRONG ADMIN
+   - Wizard nằm trong khung Admin (class "is-embedded"): bỏ nền toàn trang, bỏ header Landing
+   - Hộp thoại "Lưu vào hệ thống" và hộp thoại "Trùng tên" (dùng cả ở trang Dự báo lẫn danh sách hội viên)
+   File này dùng chung biến màu của wizard.css (định nghĩa trên .pw-root).
+   ========================================================================== */
+
+/* ---------- Wizard nằm trong Admin ---------- */
+.pw-root.is-embedded { min-height: 0; background: transparent; border-radius: 14px; }
+.pw-root.is-embedded .pw-main { max-width: 900px; padding: 0 0 40px; }
+.pw-root.is-embedded .pw-main.is-wide { max-width: 1120px; }
+.pw-root.is-embedded .pw-pick { padding-top: 24px; }
+.pw-root.is-embedded .pw-rail { top: 84px; }
+
+.pw-embed-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.pw-embed-note { font-size: 13px; color: var(--muted); }
+.pw-embed-bar .pw-lang { background: var(--surface); border: 1px solid var(--line); }
+.pw-embed-bar .pw-lang button { color: var(--muted); }
+.pw-embed-bar .pw-lang button[aria-checked='true'] { background: var(--ink); color: #fff; }
+
+.pw-model-note { margin: -16px 0 22px; font-size: 13.5px; color: var(--muted); }
+
+/* Huy hiệu "Đã lưu" */
+.pw-saved {
+  display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; border-radius: 999px;
+  background: var(--low-soft); color: #047857; font-size: 14px; font-weight: 600;
+}
+
+/* ---------- Hộp thoại (portal ra ngoài, nên tự mang lớp .pw-root) ---------- */
+.pw-root.pw-dialog-host { min-height: 0; background: none; }
+.pw-backdrop {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 16px;
+  background: rgba(15, 15, 15, 0.45);
+}
+.pw-dialog {
+  width: 100%; max-width: 540px; max-height: calc(100vh - 32px); overflow: auto;
+  background: var(--surface); border-radius: 18px; box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.35);
+}
+.pw-dialog-head { padding: 22px 24px 6px; }
+.pw-dialog-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.pw-dialog-head p { margin: 6px 0 0; font-size: 14px; color: var(--muted); }
+.pw-dialog-body { padding: 14px 24px 8px; }
+.pw-dialog-foot {
+  display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px 22px; flex-wrap: wrap;
+}
+
+/* Lựa chọn dạng thẻ (Tạo mới / Gắn vào; Cập nhật / Bỏ qua) */
+.pw-options { display: grid; gap: 10px; margin-bottom: 16px; }
+.pw-option {
+  display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 14px 16px; text-align: left;
+  border: 1.5px solid var(--line); border-radius: 12px; background: var(--surface); cursor: pointer;
+}
+.pw-option:hover { border-color: var(--line-2); }
+.pw-option[aria-checked='true'] { border-color: var(--accent); background: var(--accent-soft); }
+.pw-option .pw-radio { margin-top: 1px; }
+.pw-option[aria-checked='true'] .pw-radio { border: 6px solid var(--accent); }
+.pw-option-title { display: block; font-weight: 600; font-size: 15px; }
+.pw-option-text { display: block; margin-top: 2px; font-size: 13.5px; color: var(--muted); }
+
+/* Ô nhập trong hộp thoại */
+.pw-field { margin-bottom: 12px; }
+.pw-field label { display: block; margin-bottom: 6px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
+.pw-field .pw-input { height: 44px; }
+.pw-field-error { margin-top: 6px; font-size: 13px; color: var(--high); font-weight: 500; }
+.pw-hint { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* Danh sách hội viên để chọn (Gắn vào hội viên đã có) */
+.pw-member-list {
+  list-style: none; margin: 8px 0 0; padding: 4px; max-height: 240px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 12px;
+}
+.pw-member-list li + li { margin-top: 2px; }
+.pw-member-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%;
+  padding: 9px 12px; border: 0; border-radius: 9px; background: none; text-align: left; cursor: pointer;
+}
+.pw-member-item:hover { background: var(--bg); }
+.pw-member-item[aria-selected='true'] { background: var(--accent-soft); }
+.pw-member-name { font-weight: 600; font-size: 14px; }
+.pw-member-meta { font-size: 12.5px; color: var(--muted); }
+.pw-member-empty { padding: 12px; font-size: 13.5px; color: var(--muted); }
+
+/* Danh sách tên trùng */
+.pw-dup-names {
+  margin: 0 0 14px; padding: 10px 12px; border-radius: 10px; background: var(--mid-soft);
+  color: var(--mid-ink); font-size: 13.5px; max-height: 120px; overflow: auto;
+}
+
+/* ---------- In / xuất PDF khi Wizard nằm trong Admin: ẩn khung Admin ---------- */
+@media print {
+  .ad-sidebar, .ad-topbar, .pw-embed-bar { display: none !important; }
+  .ad-root { display: block !important; background: #fff !important; }
+  .ad-content { padding: 0 !important; max-width: none !important; }
+}
+
+@media (max-width: 640px) {
+  .pw-dialog-head, .pw-dialog-body, .pw-dialog-foot { padding-left: 18px; padding-right: 18px; }
+  .pw-dialog-foot .pw-btn { flex: 1; }
+}
