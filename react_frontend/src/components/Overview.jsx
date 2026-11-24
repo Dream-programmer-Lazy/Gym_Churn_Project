@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { ArrowRight, MapPin, Globe, RefreshCw } from 'lucide-react';
 import { API_URL } from '../config';
-import { regionOf } from './predict/utils';
 
 /**
  * TRANG "TỔNG QUAN" — số liệu 2 thị trường đặt cạnh nhau.
  * - Không cộng gộp tiền giữa 2 thị trường (VNĐ và USD khác đơn vị).
  * - Bấm vào 1 nhóm rủi ro -> mở trang hội viên của thị trường đó, đã lọc sẵn nhóm.
+ * - Tối ưu tốc độ: MongoDB đếm sẵn (GET /api/customers/summary), không tải cả danh sách hội viên về máy.
  * Props: refreshFlag (đổi -> tải lại), onOpenMarket(region, filter)
  *        filter: 'All' | 'Cao' | 'Trung bình' | 'Thấp'
  */
@@ -25,17 +25,6 @@ const ROWS = [
 
 const pct = (part, total) => (total ? ((part / total) * 100).toFixed(1) : '0.0');
 
-/** Đếm theo mức rủi ro. Hội viên "Chờ duyệt" hoặc chưa có kết quả được đếm riêng, không gộp vào "An toàn". */
-const summarize = (customers) => {
-  const s = { total: customers.length, 'Cao': 0, 'Trung bình': 0, 'Thấp': 0, pending: 0 };
-  customers.forEach((c) => {
-    const level = c.prediction?.risk_level;
-    if (c.status === 'Chờ duyệt' || !['Cao', 'Trung bình', 'Thấp'].includes(level)) s.pending += 1;
-    else s[level] += 1;
-  });
-  return s;
-};
-
 export default function Overview({ refreshFlag, onOpenMarket }) {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState('');
@@ -45,11 +34,11 @@ export default function Overview({ refreshFlag, onOpenMarket }) {
     let isMounted = true;
     const load = async () => {
       try {
-        const res = await axios.get(`${API_URL}/customers`);
+        // { vn: { total, Cao, 'Trung bình', Thấp, pending }, global: { ... } }
+        // pending = Chờ duyệt hoặc chưa dự báo (đếm riêng, không gộp vào "An toàn")
+        const res = await axios.get(`${API_URL}/customers/summary`);
         if (!isMounted) return;
-        const byRegion = { vn: [], global: [] };
-        res.data.forEach((c) => { (byRegion[regionOf(c)] || byRegion.vn).push(c); });
-        setStats({ vn: summarize(byRegion.vn), global: summarize(byRegion.global) });
+        setStats(res.data);
         setError('');
       } catch (err) {
         if (isMounted && !err.sessionExpired) {

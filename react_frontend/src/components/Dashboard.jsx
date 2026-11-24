@@ -1,10 +1,8 @@
-import { useState, useEffect } from 'react';
-import axios from 'axios';
+import { useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from 'recharts';
 import { CalendarRange, Download } from 'lucide-react';
-import { API_URL } from '../config';
-import { FORMS, regionOf, downloadCsv } from './predict/utils';
+import { FORMS, downloadCsv } from './predict/utils';
 
 const COLORS = { high: '#e11d48', mid: '#f59e0b', low: '#10b981', pend: '#a1a1aa', bar: '#18181b' };
 const MARKET_NAME = { vn: 'Việt Nam', global: 'Quốc tế' };
@@ -22,69 +20,58 @@ function ChartTooltip({ active, payload, label }) {
 }
 
 const pct = (part, total) => (total ? ((part / total) * 100).toFixed(1) : '0.0');
-const isPending = (c) => c.status === 'Chờ duyệt' || !['Cao', 'Trung bình', 'Thấp'].includes(c.prediction?.risk_level);
+const LEVEL_KEYS = ['Cao', 'Trung bình', 'Thấp'];
+const isPending = (c) => c.status === 'Chờ duyệt' || !LEVEL_KEYS.includes(c.prediction?.risk_level);
+
+/** Đếm theo mức rủi ro + theo gói. "Chờ duyệt" / chưa dự báo đếm riêng, KHÔNG gộp vào "An toàn". */
+const buildStats = (customers, plans) => {
+  let high = 0, medium = 0, low = 0, pending = 0;
+  const byPlan = Object.fromEntries(plans.map((m) => [m, 0]));
+  customers.forEach((cus) => {
+    if (isPending(cus)) pending++;
+    else if (cus.prediction.risk_level === LEVEL_KEYS[0]) high++;
+    else if (cus.prediction.risk_level === LEVEL_KEYS[1]) medium++;
+    else low++;
+    if (cus.Contract_period in byPlan) byPlan[cus.Contract_period]++;
+  });
+  return {
+    total: customers.length, highRisk: high, safe: low, mediumRisk: medium, pending,
+    riskData: [
+      { key: 'Cao', name: 'Nguy cơ cao', value: high, color: COLORS.high },
+      { key: 'Trung bình', name: 'Nguy cơ trung bình', value: medium, color: COLORS.mid },
+      { key: 'Thấp', name: 'An toàn', value: low, color: COLORS.low },
+      { key: 'pending', name: 'Chờ duyệt / chưa dự báo', value: pending, color: COLORS.pend },
+    ],
+    contractData: plans.map((m) => ({ name: `Gói ${m} tháng`, count: byPlan[m] })),
+  };
+};
 
 /**
  * Dashboard của MỘT thị trường (trang "Hội viên Việt Nam" hoặc "Hội viên Quốc tế").
- * Props: region ('vn' | 'global', mặc định 'vn'), refreshFlag, onCardClick(filter), activeFilter, dateFilter, setDateFilter
- * - Chỉ đếm hội viên có region trùng (hồ sơ cũ chưa có region được coi là 'vn').
+ * Props:
+ *   region ('vn' | 'global', mặc định 'vn')
+ *   customers  : danh sách hội viên của thị trường này — App đã tải sẵn 1 lần, dùng chung với CustomerList
+ *   ready      : false = đang tải lần đầu (chưa có số liệu)
+ *   refreshing : true  = đang tải lại sau khi Chấm điểm / thêm / sửa — vẫn hiện số cũ, chỉ báo "Đang cập nhật…"
+ *   onCardClick(filter), activeFilter, dateFilter, setDateFilter
  * - Hội viên "Chờ duyệt" / chưa dự báo được đếm riêng, KHÔNG gộp vào "An toàn".
  * - Biểu đồ gói tập theo đúng gói của thị trường (VN: 1/3/6/12, Quốc tế: 1/6/12).
  */
-export default function Dashboard({ region = 'vn', refreshFlag, onCardClick, activeFilter, dateFilter, setDateFilter }) {
-  const [stats, setStats] = useState({ total: 0, highRisk: 0, safe: 0, mediumRisk: 0, pending: 0, riskData: [], contractData: [] });
-  const [rawCustomers, setRawCustomers] = useState([]);
+export default function Dashboard({ region = 'vn', customers = [], ready = true, refreshing = false, onCardClick, activeFilter, dateFilter, setDateFilter }) {
   const form = FORMS[region];
   const plans = form.plans;
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchStats = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/customers`);
-        let customers = response.data.filter((c) => regionOf(c) === region);
-
-        if (dateFilter === '30days') {
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-          customers = customers.filter(c => new Date(c.createdAt) >= thirtyDaysAgo);
-        }
-
-        if (isMounted) {
-          setRawCustomers(customers);
-          let high = 0, medium = 0, low = 0, pending = 0;
-          const byPlan = Object.fromEntries(plans.map((m) => [m, 0]));
-
-          customers.forEach(cus => {
-            if (isPending(cus)) pending++;
-            else if (cus.prediction.risk_level === 'Cao') high++;
-            else if (cus.prediction.risk_level === 'Trung bình') medium++;
-            else low++;
-
-            if (cus.Contract_period in byPlan) byPlan[cus.Contract_period]++;
-          });
-
-          setStats({
-            total: customers.length, highRisk: high, safe: low, mediumRisk: medium, pending,
-            riskData: [
-              { key: 'Cao', name: 'Nguy cơ cao', value: high, color: COLORS.high },
-              { key: 'Trung bình', name: 'Nguy cơ trung bình', value: medium, color: COLORS.mid },
-              { key: 'Thấp', name: 'An toàn', value: low, color: COLORS.low },
-              { key: 'pending', name: 'Chờ duyệt / chưa dự báo', value: pending, color: COLORS.pend },
-            ],
-            contractData: plans.map((m) => ({ name: `Gói ${m} tháng`, count: byPlan[m] })),
-          });
-        }
-      } catch (error) {
-        console.error("Lỗi khi tải thống kê:", error);
-      }
-    };
-
-    fetchStats();
-    return () => { isMounted = false; };
-  }, [refreshFlag, dateFilter, region, plans]);
+  // Lọc "30 ngày qua" + đếm: tính lại ngay trên máy, không gọi máy chủ
+  const rawCustomers = useMemo(() => {
+    if (dateFilter !== '30days') return customers;
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    return customers.filter((c) => new Date(c.createdAt) >= thirtyDaysAgo);
+  }, [customers, dateFilter]);
+  const stats = useMemo(() => buildStats(rawCustomers, plans), [rawCustomers, plans]);
 
   const handleExportCSV = () => {
+    if (!ready) return toast('Đang tải dữ liệu, vui lòng thử lại sau giây lát.');
     if (rawCustomers.length === 0) return toast.error("Không có dữ liệu để xuất báo cáo.");
     const moneyUnit = region === 'vn' ? 'VNĐ' : 'USD';
     const header = [
@@ -124,6 +111,11 @@ export default function Dashboard({ region = 'vn', refreshFlag, onCardClick, act
           <h1 className="ad-h1">Hội viên {MARKET_NAME[region]}</h1>
           <p className="ad-sub">
             {region === 'vn' ? 'Gói 1, 3, 6, 12 tháng · tiền VNĐ.' : 'Gói 1, 6, 12 tháng · tiền USD.'} Bấm vào từng nhóm rủi ro để lọc danh sách bên dưới.
+            {(!ready || refreshing) && (
+              <span className="ad-count" role="status" style={{ marginLeft: 8 }}>
+                {ready ? 'Đang cập nhật số liệu…' : 'Đang tải số liệu…'}
+              </span>
+            )}
           </p>
         </div>
         <div className="ad-actions">
@@ -137,7 +129,8 @@ export default function Dashboard({ region = 'vn', refreshFlag, onCardClick, act
       </div>
 
       {/* ---------- Dải KPI + phổ rủi ro ---------- */}
-      <section className="ad-panel ad-overview" aria-label="Chỉ số tổng quan">
+      <section className="ad-panel ad-overview" aria-label="Chỉ số tổng quan" aria-busy={!ready || refreshing}
+        style={{ opacity: ready ? 1 : 0.55, transition: 'opacity .2s' }}>
         <div className="ad-kpis">
           {kpis.map(k => (
             <button key={k.key} className={`ad-kpi ${k.tone}`} aria-pressed={activeFilter === k.key} onClick={() => onCardClick(k.key)}>
@@ -169,7 +162,7 @@ export default function Dashboard({ region = 'vn', refreshFlag, onCardClick, act
       </section>
 
       {/* ---------- Biểu đồ ---------- */}
-      <div className="ad-charts">
+      <div className="ad-charts" style={{ opacity: ready ? 1 : 0.55, transition: 'opacity .2s' }}>
         <section className="ad-panel">
           <div className="ad-panel-head">
             <div>

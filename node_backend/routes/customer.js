@@ -3,7 +3,10 @@
  * ----------------------------------------------------------------
  * GET    /api/customers/metrics?region=vn  -> chỉ số mô hình (tab Metrics)
  * POST   /api/customers                    -> thêm hội viên + dự báo
- * GET    /api/customers                    -> danh sách (không kèm mật khẩu, lịch sử)
+ * GET    /api/customers?region=vn          -> danh sách 1 thị trường, chỉ các trường màn hình cần (nhẹ)
+ *                                             (không gửi region -> cả 2 thị trường, như cũ)
+ * GET    /api/customers/pending            -> chuông "Khách chờ duyệt": chỉ người chờ duyệt, vài trường
+ * GET    /api/customers/summary            -> trang Tổng quan: MongoDB đếm sẵn theo thị trường + mức rủi ro
  * DELETE /api/customers/:id                -> xóa
  * PUT    /api/customers/:id                -> sửa + dự báo lại (thêm 1 dòng lịch sử)
  * PUT    /api/customers/:id/approve        -> duyệt hội viên tự đăng ký + dự báo
@@ -111,15 +114,77 @@ router.post('/', verifyToken, async (req, res) => {
     }
 });
 
-// --- 2. LẤY DANH SÁCH HỘI VIÊN (không trả mật khẩu & lịch sử dự báo cho nhẹ) ---
+// --- 2. LẤY DANH SÁCH HỘI VIÊN ---
+// Tối ưu tốc độ: lọc theo thị trường ngay trong MongoDB, bỏ các trường màn hình không dùng
+// (mật khẩu, lịch sử, lý do/cảnh báo, 6 cột cũ của mô hình 13 cột), dùng .lean() (trả object thường, nhanh hơn).
+const LIST_EXCLUDE = [
+    '-password', '-predictionHistory', '-prediction.reasons', '-prediction.warnings',
+    '-gender', '-Near_Location', '-Partner', '-Promo_friends', '-Phone', '-Group_visits', '-actual_churn', '-__v',
+].join(' ');
+
 router.get('/', verifyToken, async (req, res) => {
     try {
-        const customers = await Customer.find()
-            .select('-password -predictionHistory')
-            .sort({ createdAt: -1 });
+        const filter = req.query.region ? regionFilter(normalizeRegion(req.query.region)) : {};
+        const customers = await Customer.find(filter)
+            .select(LIST_EXCLUDE)
+            .sort({ createdAt: -1 })
+            .lean();
         res.status(200).json(customers);
     } catch (error) {
         sendError(res, error, 'Lỗi khi lấy danh sách hội viên.');
+    }
+});
+
+// --- 2b. CHUÔNG "KHÁCH CHỜ DUYỆT": chỉ người đang chờ duyệt, vài trường để hiển thị ---
+router.get('/pending', verifyToken, async (req, res) => {
+    try {
+        const pending = await Customer.find({ status: 'Chờ duyệt' })
+            .select('fullName actualPhoneNumber Contract_period region createdAt')
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .lean();
+        res.status(200).json(pending);
+    } catch (error) {
+        sendError(res, error, 'Lỗi khi lấy danh sách chờ duyệt.');
+    }
+});
+
+// --- 2c. TỔNG QUAN 2 THỊ TRƯỜNG: MongoDB tự đếm, không gửi cả danh sách về trình duyệt ---
+// Trả về: { vn: { total, Cao, 'Trung bình', Thấp, pending }, global: { ... } }
+// "pending" = Chờ duyệt HOẶC chưa có kết quả dự báo (không gộp vào "An toàn").
+router.get('/summary', verifyToken, async (req, res) => {
+    try {
+        const groups = await Customer.aggregate([
+            {
+                $group: {
+                    _id: {
+                        region: { $ifNull: ['$region', DEFAULT_REGION] },   // hồ sơ cũ chưa có region -> 'vn'
+                        level: {
+                            $cond: [
+                                { $or: [
+                                    { $eq: ['$status', 'Chờ duyệt'] },
+                                    { $not: [{ $in: ['$prediction.risk_level', LEVELS] }] },
+                                ] },
+                                'pending',
+                                '$prediction.risk_level',
+                            ],
+                        },
+                    },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const empty = () => ({ total: 0, 'Cao': 0, 'Trung bình': 0, 'Thấp': 0, pending: 0 });
+        const result = { vn: empty(), global: empty() };
+        groups.forEach(({ _id, count }) => {
+            const bucket = result[_id.region] || result[DEFAULT_REGION];
+            bucket[_id.level] += count;
+            bucket.total += count;
+        });
+        res.status(200).json(result);
+    } catch (error) {
+        sendError(res, error, 'Lỗi khi tổng hợp số liệu.');
     }
 });
 

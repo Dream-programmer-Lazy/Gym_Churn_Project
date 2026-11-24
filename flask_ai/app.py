@@ -11,7 +11,7 @@ Endpoints:
     GET  /model-info?region=vn&lang=vi     -> khoảng giá trị, gói tập, đơn vị tiền (dựng form)
     GET  /metrics?region=vn                -> Accuracy/Precision/Recall/F1/AUC + bảng so sánh cho báo cáo
     POST /predict                          -> dự báo 1 hội viên
-    POST /predict-batch                    -> dự báo nhiều hội viên (CSV)
+    POST /predict-batch                    -> dự báo nhiều hội viên (CSV, "Chấm điểm ngay"): cả lô vào mô hình 1 lần
 
 Body của /predict:
     { "region": "vn" | "global",           (mặc định "vn")
@@ -354,18 +354,22 @@ def build_advice(level, reasons, lang):
     return {'level': level, 'title': title, 'text': text, 'actions': actions}
 
 
-def predict_one(raw, region=None, lang=None):
-    region, bundle = get_bundle(region)
-    lang = get_lang(lang, region)
-
-    values, errors, warnings = validate(raw, region, bundle, lang)
-    if errors:
-        return {'ok': False, 'errors': errors}
-
+def predict_probs(values_list, bundle):
+    """
+    Tính xác suất rời bỏ cho NHIỀU hội viên trong 1 lần gọi mô hình (nhanh hơn nhiều so với gọi từng người).
+    values_list: danh sách dict 7 cột đã kiểm tra hợp lệ. Trả về danh sách xác suất (0..1) đúng thứ tự.
+    """
+    if not values_list:
+        return []
     model = bundle['model']
-    X = pd.DataFrame([[values[f] for f in bundle['features']]], columns=bundle['features'])
+    features = bundle['features']
+    X = pd.DataFrame([[v[f] for f in features] for v in values_list], columns=features)
     positive_index = list(model.classes_).index(1)
-    prob = float(model.predict_proba(X)[0][positive_index])
+    return [float(p) for p in model.predict_proba(X)[:, positive_index]]
+
+
+def build_result(values, warnings, prob, region, bundle, lang):
+    """Từ xác suất đã tính -> mức rủi ro, lý do, lời khuyên (dùng chung cho /predict và /predict-batch)."""
     percent = round(prob * 100, 2)
     level = risk_label(percent, bundle['thresholds'])
     reasons, protective = explain(values, region, bundle, lang)
@@ -392,6 +396,41 @@ def predict_one(raw, region=None, lang=None):
         'warnings': warnings,
         'advice': build_advice(level, reasons, lang),
     }
+
+
+def predict_one(raw, region=None, lang=None):
+    region, bundle = get_bundle(region)
+    lang = get_lang(lang, region)
+
+    values, errors, warnings = validate(raw, region, bundle, lang)
+    if errors:
+        return {'ok': False, 'errors': errors}
+    prob = predict_probs([values], bundle)[0]
+    return build_result(values, warnings, prob, region, bundle, lang)
+
+
+def predict_many(rows, region, lang):
+    """
+    Dự báo nhiều dòng: kiểm tra từng dòng, rồi đưa TẤT CẢ dòng hợp lệ vào mô hình MỘT lần.
+    Dòng lỗi không làm hỏng các dòng khác. Kết quả giữ đúng thứ tự đầu vào.
+    """
+    region, bundle = get_bundle(region)
+    results = [None] * len(rows)
+    valid = []   # (vị trí, values, warnings)
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            results[i] = {'ok': False, 'errors': [{'field': None, 'message': tr('bad_row', lang)}]}
+            continue
+        values, errors, warnings = validate(row, region, bundle, lang)
+        if errors:
+            results[i] = {'ok': False, 'errors': errors}
+        else:
+            valid.append((i, values, warnings))
+
+    probs = predict_probs([v for _, v, _ in valid], bundle)
+    for (i, values, warnings), prob in zip(valid, probs):
+        results[i] = build_result(values, warnings, prob, region, bundle, lang)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +529,7 @@ def predict_batch():
     """
     Body: { "region": "vn", "lang": "vi", "rows": [ {7 cột, fullName?, cột thừa...}, ... ] }
     Trả về kết quả từng dòng; dòng lỗi không làm hỏng các dòng khác.
+    Tối ưu tốc độ: kiểm tra từng dòng, rồi tính xác suất cho TẤT CẢ dòng hợp lệ trong 1 lần gọi mô hình.
     """
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get('rows'), list):
@@ -503,22 +543,17 @@ def predict_batch():
     try:
         region, _ = get_bundle(data.get('region'))
         lang = get_lang(data.get('lang'), region)
-        results, summary = [], {'total': len(rows), 'ok': 0, 'failed': 0, 'Cao': 0, 'Trung bình': 0, 'Thấp': 0}
-        for i, row in enumerate(rows):
-            if not isinstance(row, dict):
-                results.append({'row': i + 1, 'ok': False, 'errors': [{'field': None, 'message': tr('bad_row', lang)}]})
-                summary['failed'] += 1
-                continue
-            r = predict_one(row, region, lang)
+        results = predict_many(rows, region, lang)   # 1 lần gọi mô hình cho cả lô
+        summary = {'total': len(rows), 'ok': 0, 'failed': 0, 'Cao': 0, 'Trung bình': 0, 'Thấp': 0}
+        for i, (row, r) in enumerate(zip(rows, results)):
             r['row'] = i + 1
-            if row.get('fullName'):
+            if isinstance(row, dict) and row.get('fullName'):
                 r['fullName'] = row['fullName']
             if r['ok']:
                 summary['ok'] += 1
                 summary[r['risk_level']] += 1
             else:
                 summary['failed'] += 1
-            results.append(r)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except LookupError as e:

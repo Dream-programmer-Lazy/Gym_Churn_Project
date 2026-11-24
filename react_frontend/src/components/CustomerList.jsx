@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import axios from 'axios';
 import { CloudUpload, PenLine, Trash2, BellRing, CircleCheck, Search, Clock, Inbox, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../config';
-import { regionOf, isDuplicateConflict } from './predict/utils';
+import { isDuplicateConflict } from './predict/utils';
 import { DuplicateDialog } from './predict/SaveToSystem';
 
 const RISK_TABS = [
@@ -22,43 +22,23 @@ const toneOf = (cus) => (isPendingOf(cus) ? 'tone-pend' : LEVEL_TONE[cus.predict
 
 /**
  * Danh sách hội viên của MỘT thị trường.
- * Props: region ('vn' | 'global', mặc định 'vn' — lấy từ menu), setEditingCustomer, refreshFlag, onSuccess,
- *        externalFilter, onFilterChange, dateFilter
+ * Props: region ('vn' | 'global', mặc định 'vn' — lấy từ menu)
+ *        customers  : danh sách hội viên của thị trường — App tải sẵn 1 lần, dùng chung với Dashboard
+ *        ready      : false = đang tải lần đầu (hiện khung xám)
+ *        refreshing : true  = đang tải lại (vẫn hiện bảng cũ, chỉ báo "Đang cập nhật…")
+ *        setEditingCustomer, onSuccess (thêm/sửa/xóa xong -> App tải lại), externalFilter, onFilterChange, dateFilter
  * - Nút "Tải lên CSV": lưu thẳng vào thị trường của trang. Có tên trùng -> hỏi Cập nhật / Bỏ qua (luật trùng).
  * - Chỉ còn 1 mô hình -> bỏ ô chọn thuật toán.
  * - Đang lọc theo mức rủi ro (Cao / Trung bình / An toàn) -> sắp theo % rủi ro giảm dần (người nguy hiểm nhất lên đầu).
  *   Xem "Tất cả" -> giữ thứ tự cũ (mới tạo lên đầu).
  */
-export default function CustomerList({ region = 'vn', setEditingCustomer, refreshFlag, onSuccess, externalFilter, onFilterChange, dateFilter }) {
-  const [customers, setCustomers] = useState([]);
-  const [loading, setLoading] = useState(true);
+export default function CustomerList({ region = 'vn', customers = [], ready = true, refreshing = false, setEditingCustomer, onSuccess, externalFilter, onFilterChange, dateFilter }) {
   const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [limit, setLimit] = useState(PAGE);
   const [conflict, setConflict] = useState(null);    // dữ liệu 409 (tên trùng) đang chờ chọn
   const pendingFile = useRef(null);                   // file CSV đang chờ chọn Cập nhật / Bỏ qua
   const market = MARKET_NAME[region];
-
-  useEffect(() => {
-    const fetchCustomers = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/customers`);
-        setCustomers(response.data.filter((c) => regionOf(c) === region));
-      } catch (error) {
-        console.error("Lỗi:", error);
-        // Hết phiên -> App đã báo và chuyển về đăng nhập, không báo lỗi trùng
-        if (!error.sessionExpired) {
-          const msg = error.response
-            ? (error.response.data?.error || `Máy chủ trả lỗi ${error.response.status}.`)
-            : 'Không kết nối được máy chủ Node (cổng 3001). Hãy kiểm tra server đã chạy chưa.';
-          toast.error(`Không thể tải danh sách hội viên: ${msg}`, { id: 'load-customers' });
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchCustomers();
-  }, [refreshFlag, region]);
 
   const handleDelete = async (id, name) => {
     if (window.confirm(`Xác nhận xóa khách hàng "${name}"?`)) {
@@ -79,7 +59,7 @@ export default function CustomerList({ region = 'vn', setEditingCustomer, refres
       try {
         await axios.post(`${API_URL}/customers/${id}/notify`, { message: msg });
         toast.success(`Đã gửi thông báo đến ${name} thành công!`);
-        onSuccess();
+        // Lời nhắc không làm đổi số liệu trên bảng -> không cần tải lại cả danh sách
       } catch (error) {
         console.error("Lỗi khi gửi thông báo:", error);
         if (!error.sessionExpired) toast.error("Lỗi khi gửi thông báo.");
@@ -173,7 +153,7 @@ export default function CustomerList({ region = 'vn', setEditingCustomer, refres
   const pendingCount = customers.filter(c => c.status === 'Chờ duyệt').length;
   const shown = filteredCustomers.slice(0, limit);
 
-  if (loading) {
+  if (!ready) {
     return (
       <div id="customer-list-section" aria-busy="true">
         <div className="ad-toolbar"><div className="ad-skel" style={{ width: 180, height: 14 }} /></div>
@@ -201,7 +181,10 @@ export default function CustomerList({ region = 'vn', setEditingCustomer, refres
       <div className="ad-toolbar">
         <div className="ad-toolbar-row">
           <div>
-            <h3 className="ad-h3">Danh sách hội viên {market} <span className="ad-count ad-num">{filteredCustomers.length}/{customers.length}</span></h3>
+            <h3 className="ad-h3">
+              Danh sách hội viên {market} <span className="ad-count ad-num">{filteredCustomers.length}/{customers.length}</span>
+              {refreshing && <span className="ad-count" role="status" style={{ marginLeft: 6 }}>Đang cập nhật…</span>}
+            </h3>
             <p className="ad-h3-sub">
               {pendingCount > 0 ? `${pendingCount} hội viên đang chờ duyệt và chấm điểm rủi ro` : 'Tất cả hội viên đã được chấm điểm rủi ro'}
             </p>
@@ -235,7 +218,7 @@ export default function CustomerList({ region = 'vn', setEditingCustomer, refres
       </div>
 
       {/* ---------- Bảng (cuộn dọc, header dính) ---------- */}
-      <div className="ad-table-scroll">
+      <div className="ad-table-scroll" aria-busy={refreshing} style={{ opacity: refreshing ? 0.6 : 1, transition: 'opacity .2s' }}>
         <table className="ad-table">
           <thead>
             <tr>

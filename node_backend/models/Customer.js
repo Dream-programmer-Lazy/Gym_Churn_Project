@@ -8,8 +8,8 @@ const predictionSchema = new mongoose.Schema({
         enum: ['Thấp', 'Trung bình', 'Cao', 'Chưa dự báo'],
         default: 'Chưa dự báo'
     },
-    model_used: { type: String, default: 'Chưa xác định' },   // "Logistic Regression" / "Random Forest"
-    model_type: { type: String },                             // "logistic" / "random_forest"
+    model_used: { type: String, default: 'Chưa xác định' },   // "Logistic Regression" (bản cũ có thể là "Random Forest")
+    model_type: { type: String },                             // "logistic"
     region: { type: String, enum: ['vn', 'global'] },         // mô hình thị trường đã dùng
     model_version: { type: String },                          // thời điểm huấn luyện mô hình
     reasons: [{ type: String }],                              // tối đa 3 lý do chính làm tăng rủi ro
@@ -59,5 +59,11 @@ const customerSchema = new mongoose.Schema({
     actual_churn: { type: Number, enum: [0, 1], default: 0 },
     admin_message: { type: String }
 }, { timestamps: true });
+
+// --- CHỈ MỤC (INDEX) — giống mục lục sách: MongoDB tìm thẳng tới đúng nhóm, không phải lật từng hồ sơ ---
+// Danh sách / Chấm điểm ngay / Cần chăm sóc / Ưu đãi đều lọc theo thị trường + trạng thái (+ mức rủi ro)
+customerSchema.index({ region: 1, status: 1, 'prediction.risk_level': 1 });
+// Chuông "Khách chờ duyệt" chỉ đếm theo trạng thái
+customerSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Customer', customerSchema);

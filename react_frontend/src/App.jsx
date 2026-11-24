@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { Bell, LogOut, Settings, UserCircle, LayoutDashboard, MapPin, Globe, Sparkles, Gift, Activity, X } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
@@ -94,6 +94,9 @@ const NAV = [
 ];
 const MARKET_TABS = ['vn', 'global'];
 
+const marketKeyOf = (region, flag) => `${region}|${flag}`;
+const NO_MARKET = { key: '', region: null, list: [] };
+
 const getInitials = (name = '') =>
   name.trim().split(/\s+/).slice(-2).map(n => n[0]).join('').toUpperCase() || 'AD';
 
@@ -112,6 +115,10 @@ function App() {
   // Trang đang mở trong Admin: 'overview' | 'vn' | 'global' | 'predict' | 'offers'
   const [adminTab, setAdminTab] = useState('overview');
 
+  // Danh sách hội viên của trang thị trường đang mở — App tải MỘT lần rồi dùng chung cho Dashboard + CustomerList.
+  // key = "thị trường|lần làm mới": khác key hiện tại nghĩa là đang tải lại (vẫn giữ số liệu cũ trên màn hình).
+  const [market, setMarket] = useState(NO_MARKET);
+
   const notifRef = useRef(null);
   const userMenuRef = useRef(null);
 
@@ -124,16 +131,51 @@ function App() {
     setEditingCustomer(null);
   };
 
+  const isStaff = !!currentUser && currentUser.role !== 'Customer';
+
+  // Chuông: chỉ lấy người đang chờ duyệt (API nhẹ), không tải cả danh sách hội viên
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'Customer') {
-      axios.get(`${API_URL}/customers`)
-        .then(res => {
-          const pending = res.data.filter(c => c.status === 'Chờ duyệt');
-          setPendingUsers(pending);
-        })
-        .catch(err => console.error(err));
-    }
-  }, [refreshFlag, currentUser]);
+    if (!isStaff) return undefined;
+    let alive = true;
+    axios.get(`${API_URL}/customers/pending`)
+      .then((res) => { if (alive) setPendingUsers(res.data); })
+      .catch((err) => console.error(err));
+    return () => { alive = false; };
+  }, [refreshFlag, isStaff]);
+
+  // Trang Hội viên VN / Quốc tế: tải danh sách ĐÚNG 1 thị trường, 1 lần cho cả trang
+  useEffect(() => {
+    if (!isStaff || !MARKET_TABS.includes(adminTab)) return undefined;
+    let alive = true;
+    const key = marketKeyOf(adminTab, refreshFlag);
+    const load = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/customers`, { params: { region: adminTab } });
+        if (alive) setMarket({ key, region: adminTab, list: res.data });
+      } catch (error) {
+        console.error('Lỗi tải danh sách hội viên:', error);
+        if (!alive) return;
+        // Lỗi: giữ số liệu cũ (nếu cùng thị trường) để màn hình không trống trơn
+        setMarket((prev) => ({ key, region: adminTab, list: prev.region === adminTab ? prev.list : [] }));
+        if (!error.sessionExpired) {
+          const msg = error.response
+            ? (error.response.data?.error || `Máy chủ trả lỗi ${error.response.status}.`)
+            : 'Không kết nối được máy chủ Node (cổng 3001). Hãy kiểm tra server đã chạy chưa.';
+          toast.error(`Không thể tải danh sách hội viên: ${msg}`, { id: 'load-customers' });
+        }
+      }
+    };
+    load();
+    return () => { alive = false; };
+  }, [adminTab, refreshFlag, isStaff]);
+
+  // Số liệu đưa xuống Dashboard + CustomerList
+  const marketCustomers = useMemo(
+    () => (market.region === adminTab ? market.list : []),
+    [market, adminTab],
+  );
+  const marketReady = market.region === adminTab;                                   // đã có số liệu của thị trường này
+  const marketRefreshing = marketReady && market.key !== marketKeyOf(adminTab, refreshFlag); // đang tải lại, vẫn hiện số cũ
 
   // Phiên hết hạn ngay lúc tải trang -> báo 1 lần trên màn hình đăng nhập
   useEffect(() => {
@@ -146,6 +188,8 @@ function App() {
   useEffect(() => {
     sessionExpiredHandler = (nextView) => {
       setCurrentUser(null);
+      setMarket(NO_MARKET);
+      setPendingUsers([]);
       setView(nextView);
     };
     return () => { sessionExpiredHandler = null; };
@@ -173,6 +217,8 @@ function App() {
     setView('landing');
     setShowUserMenu(false);
     setAdminTab('overview');
+    setMarket(NO_MARKET);   // không để lộ số liệu cũ cho người đăng nhập sau
+    setPendingUsers([]);
   };
 
   // "Xem tất cả người mức Cao" trong khung Cần chăm sóc -> lọc bảng hội viên + cuộn tới bảng
@@ -321,7 +367,8 @@ function App() {
           {/* Trang VN và Quốc tế dùng CHUNG component, chỉ khác region */}
           {isMarketTab && (
             <div key={adminTab}>
-              <Dashboard region={adminTab} refreshFlag={refreshFlag} onCardClick={setActiveFilter} activeFilter={activeFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />
+              <Dashboard region={adminTab} customers={marketCustomers} ready={marketReady} refreshing={marketRefreshing}
+                onCardClick={setActiveFilter} activeFilter={activeFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />
 
               {/* Cần chăm sóc tuần này (4.4) + Chấm điểm ngay (4.3) */}
               <CareList region={adminTab} refreshFlag={refreshFlag} onRescored={handleRefresh} onViewAll={viewAllHigh} />
@@ -332,7 +379,9 @@ function App() {
                   <CustomerForm region={adminTab} editingCustomer={editingCustomer} setEditingCustomer={setEditingCustomer} onSuccess={handleRefresh} />
                 </section>
                 <section className="ad-panel ad-table-panel">
-                  <CustomerList region={adminTab} setEditingCustomer={setEditingCustomer} refreshFlag={refreshFlag} onSuccess={handleRefresh} externalFilter={activeFilter} onFilterChange={setActiveFilter} dateFilter={dateFilter} />
+                  <CustomerList region={adminTab} customers={marketCustomers} ready={marketReady} refreshing={marketRefreshing}
+                    setEditingCustomer={setEditingCustomer} onSuccess={handleRefresh}
+                    externalFilter={activeFilter} onFilterChange={setActiveFilter} dateFilter={dateFilter} />
                 </section>
               </div>
             </div>
