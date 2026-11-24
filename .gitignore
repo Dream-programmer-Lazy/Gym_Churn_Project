@@ -1,0 +1,43 @@
+# ================================================================
+# .gitignore CHO TOÀN BỘ DỰ ÁN (React + Node + Flask)
+# File nào khớp các mẫu dưới đây sẽ KHÔNG được đưa lên GitHub.
+# ================================================================
+
+# ---------- Bí mật: mật khẩu, chuỗi kết nối, JWT secret ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Node / React: thư viện tải về (npm install tạo lại được) ----------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- React (Vite): thư mục build ----------
+react_frontend/dist/
+react_frontend/dist-ssr/
+*.local
+
+# ---------- Python / Flask: môi trường ảo và file tạm ----------
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ---------- Thư mục upload cũ (không còn dùng) ----------
+node_backend/uploads/
+
+# ---------- Hệ điều hành / trình soạn thảo ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.log
+
+# LƯU Ý: KHÔNG bỏ qua *.csv và *.pkl
+#   - flask_ai/*.csv  : dữ liệu huấn luyện, cần cho báo cáo
+#   - flask_ai/*.pkl  : mô hình đã huấn luyện, cần khi triển khai lên mạng
