@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Bell, LogOut, Settings, UserCircle, LayoutDashboard, MapPin, Globe, Sparkles, Activity, X } from 'lucide-react';
+import { Bell, LogOut, Settings, UserCircle, LayoutDashboard, MapPin, Globe, Sparkles, Gift, Activity, X } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 
 import { API_URL } from './config';
@@ -9,6 +9,7 @@ import CustomerList from './components/CustomerList';
 import Dashboard from './components/Dashboard';
 import Overview from './components/Overview';
 import CareList from './components/CareList';
+import OffersPage from './components/OffersPage';
 import Login from './components/Login';
 import ClientRegister from './components/ClientRegister';
 import ClientLogin from './components/ClientLogin';
@@ -83,12 +84,13 @@ const TOAST_OPTIONS = {
   error: { iconTheme: { primary: '#e11d48', secondary: '#fff' } },
 };
 
-// Menu Admin: Tổng quan | Hội viên Việt Nam | Hội viên Quốc tế | Dự báo
+// Menu Admin: Tổng quan | Hội viên Việt Nam | Hội viên Quốc tế | Dự báo | Ưu đãi
 const NAV = [
   { key: 'overview', label: 'Tổng quan', title: 'Tổng quan 2 thị trường', Icon: LayoutDashboard },
   { key: 'vn', label: 'Hội viên Việt Nam', title: 'Hội viên Việt Nam', Icon: MapPin },
   { key: 'global', label: 'Hội viên Quốc tế', title: 'Hội viên Quốc tế', Icon: Globe },
   { key: 'predict', label: 'Dự báo', title: 'Dự báo & lưu vào hệ thống', Icon: Sparkles },
+  { key: 'offers', label: 'Ưu đãi', title: 'Ưu đãi gia hạn', Icon: Gift },
 ];
 const MARKET_TABS = ['vn', 'global'];
 
@@ -107,7 +109,7 @@ function App() {
   const [dateFilter, setDateFilter] = useState('all');
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // Trang đang mở trong Admin: 'overview' | 'vn' | 'global' | 'predict'
+  // Trang đang mở trong Admin: 'overview' | 'vn' | 'global' | 'predict' | 'offers'
   const [adminTab, setAdminTab] = useState('overview');
 
   const notifRef = useRef(null);
@@ -338,6 +340,9 @@ function App() {
 
           {/* Dự báo trong Admin (3.1) — có nút "Lưu vào hệ thống" (3.2) và "Lưu tất cả" (3.3) */}
           {adminTab === 'predict' && <PredictWizard embedded />}
+
+          {/* Ưu đãi gia hạn: duyệt gửi (5.2) + nhật ký (5.5) */}
+          {adminTab === 'offers' && <OffersPage />}
         </main>
       </div>
     </div>

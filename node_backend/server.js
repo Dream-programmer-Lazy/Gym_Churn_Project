@@ -10,6 +10,7 @@ const authRoutes = require('./routes/auth');           // Admin/Staff: đăng nh
 const clientAuthRoutes = require('./routes/clientAuth'); // Hội viên: đăng ký, đăng nhập, hồ sơ của tôi
 const customerRoutes = require('./routes/customer');   // Quản lý hội viên (chỉ Admin/Staff)
 const predictRoutes = require('./routes/predict');     // Landing Page: dự báo dùng thử, không lưu
+const offerRoutes = require('./routes/offers');        // Ưu đãi gia hạn: duyệt gửi + nhật ký (chỉ Admin/Staff)
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -46,6 +47,8 @@ app.use('/api/client', clientAuthRoutes);
 // /api/customers: phải đăng nhập VÀ là Admin/Staff (hội viên bị chặn, chỉ dùng /api/client/me)
 app.use('/api/customers', verifyToken, requireStaff, customerRoutes);
 app.use('/api/predict', predictRoutes);
+// /api/offers: phải đăng nhập VÀ là Admin/Staff
+app.use('/api/offers', verifyToken, requireStaff, offerRoutes);
 
 app.listen(PORT, () => {
     console.log(`🚀 Server Node.js đang chạy tại http://localhost:${PORT}`);
