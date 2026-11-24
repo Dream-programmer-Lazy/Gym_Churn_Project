@@ -6,7 +6,7 @@
   "data_file": "gym_churn_vn_synthetic.csv",
   "data_sha256": "5b2e4cb5f211bc73a7640a124333930b71576dd6cee9f59b47351eca2a4c37a2",
   "data_kind": "synthetic",
-  "trained_at_utc": "2026-11-06T02:54:29.836606+00:00",
+  "trained_at_utc": "2026-11-24T15:27:33.076450+00:00",
   "versions": {
     "python": "3.14.7",
     "scikit_learn": "1.9.1",
