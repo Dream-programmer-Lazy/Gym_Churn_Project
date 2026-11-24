@@ -115,6 +115,9 @@ function App() {
   // Trang đang mở trong Admin: 'overview' | 'vn' | 'global' | 'predict' | 'offers'
   const [adminTab, setAdminTab] = useState('overview');
 
+  // Gói đã bấm ở Bảng giá Landing (1 | 3 | 6 | 12) -> trang Đăng ký chọn sẵn; null = mặc định
+  const [registerPlan, setRegisterPlan] = useState(null);
+
   // Danh sách hội viên của trang thị trường đang mở — App tải MỘT lần rồi dùng chung cho Dashboard + CustomerList.
   // key = "thị trường|lần làm mới": khác key hiện tại nghĩa là đang tải lại (vẫn giữ số liệu cũ trên màn hình).
   const [market, setMarket] = useState(NO_MARKET);
@@ -238,17 +241,32 @@ function App() {
     }, 80);
   };
 
+  // Chuyển màn hình công khai (Landing, Đăng nhập, Đăng ký, Dùng thử AI).
+  // options.plan: gói bấm ở Bảng giá -> trang Đăng ký chọn sẵn gói đó. Luôn cuộn lên đầu trang mới.
+  const navigate = (nextView, options = {}) => {
+    if (nextView === 'client_register') setRegisterPlan(options.plan ?? null);
+    setView(nextView);
+    window.scrollTo(0, 0);
+  };
+  const goHome = () => navigate('landing');
+
   // Toaster dùng chung cho MỌI màn hình (kể cả đăng nhập, landing)
   const toaster = <Toaster position="top-right" reverseOrder={false} toastOptions={TOAST_OPTIONS} />;
 
   if (currentUser && currentUser.role === 'Customer') return <>{toaster}<ClientDashboard user={currentUser} onLogout={handleLogout} /></>;
-  if (!currentUser && view === 'landing') return <>{toaster}<LandingPage onNavigate={setView} /></>;
-  if (!currentUser && view === 'client_register') return <>{toaster}<ClientRegister onBack={() => setView('landing')} /></>;
-  if (!currentUser && view === 'client_login') return <>{toaster}<ClientLogin onLoginSuccess={setCurrentUser} onBack={() => setView('landing')} /></>;
-  if (!currentUser && view === 'login') return <>{toaster}<Login onLoginSuccess={setCurrentUser} onBack={() => setView('landing')} /></>;
+  if (!currentUser && view === 'landing') return <>{toaster}<LandingPage onNavigate={navigate} /></>;
+  if (!currentUser && view === 'client_register') {
+    // key theo gói -> bấm gói khác ở Bảng giá thì form khởi tạo lại với đúng gói đó
+    return <>{toaster}<ClientRegister key={registerPlan ?? 'default'} initialPlan={registerPlan}
+      onBack={goHome} onLogin={() => navigate('client_login')} /></>;
+  }
+  if (!currentUser && view === 'client_login') {
+    return <>{toaster}<ClientLogin onLoginSuccess={setCurrentUser} onBack={goHome} onRegister={() => navigate('client_register')} /></>;
+  }
+  if (!currentUser && view === 'login') return <>{toaster}<Login onLoginSuccess={setCurrentUser} onBack={goHome} /></>;
   // Trang dùng thử công khai (không lưu) — phương án A: vẫn giữ ở Landing Page
-  if (!currentUser && view === 'predict') return <>{toaster}<PredictWizard onBack={() => setView('landing')} /></>;
-  if (!currentUser) return <>{toaster}<LandingPage onNavigate={setView} /></>;
+  if (!currentUser && view === 'predict') return <>{toaster}<PredictWizard onBack={goHome} /></>;
+  if (!currentUser) return <>{toaster}<LandingPage onNavigate={navigate} /></>;
 
   const roleLabel = currentUser.role === 'Admin' ? 'Quản trị viên hệ thống' : 'Quản lý phòng tập';
   const pageTitle = NAV.find((n) => n.key === adminTab)?.title || '';

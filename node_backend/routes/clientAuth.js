@@ -3,16 +3,20 @@
  * --------------------------
  * POST /api/client/register        -> công khai: hội viên tự đăng ký (trạng thái "Chờ duyệt")
  * POST /api/client/login           -> công khai: đăng nhập, trả token role = Customer
- * GET  /api/client/me              -> hội viên: xem hồ sơ CỦA CHÍNH MÌNH
+ * GET  /api/client/me              -> hội viên: xem hồ sơ CỦA CHÍNH MÌNH + ưu đãi gia hạn còn hạn (nếu có)
  * PUT  /api/client/me              -> hội viên: sửa họ tên, số điện thoại của chính mình
  * POST /api/client/me/change-plan  -> hội viên: gửi yêu cầu đổi gói (chờ Admin duyệt lại)
  *
  * Hội viên KHÔNG được gọi /api/customers (danh sách toàn bộ hội viên) — server.js đã chặn.
+ *
+ * KHÔNG trả kết quả dự báo rủi ro (prediction) cho hội viên: % "khả năng bỏ tập" là thông tin nội bộ
+ * để phòng tập chăm sóc khách, nói thẳng với khách dễ gây phản cảm. Chỉ Admin/Staff xem được.
  */
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const Customer = require('../models/Customer');
+const Offer = require('../models/Offer');
 const { verifyToken, requireCustomer, signToken } = require('../middleware/auth');
 
 const CUSTOMER_TOKEN_TTL = '7d';
@@ -20,8 +24,37 @@ const CUSTOMER_TOKEN_TTL = '7d';
 const PLANS = { vn: [1, 3, 6, 12], global: [1, 6, 12] };
 // Hội viên chỉ được tự sửa các trường này (không được tự sửa số liệu dùng cho AI)
 const SELF_EDITABLE = ['fullName', 'actualPhoneNumber'];
-// Không bao giờ trả mật khẩu; lịch sử dự báo để Admin xem, không cần ở cổng hội viên
-const PUBLIC_SELECT = '-password -predictionHistory';
+// Không bao giờ trả mật khẩu; kết quả dự báo + lịch sử chỉ dành cho Admin/Staff
+const PUBLIC_SELECT = '-password -predictionHistory -prediction';
+const toPublic = (doc) => {
+    const plain = doc.toObject ? doc.toObject() : { ...doc };
+    delete plain.password;
+    delete plain.predictionHistory;
+    delete plain.prediction;
+    return plain;
+};
+
+/**
+ * Ưu đãi gia hạn của hội viên (trang Ưu đãi gửi qua cổng hội viên).
+ * - offer: ưu đãi MỚI NHẤT còn hạn -> hiện thành thẻ ưu đãi riêng (mã, giá, hạn dùng).
+ * - Trang Ưu đãi cũng ghi nội dung ưu đãi vào admin_message; nếu admin_message chính là nội dung ưu đãi
+ *   thì không trả lại nữa (tránh hiện 2 lần, và không hiện ưu đãi đã hết hạn như một "thông báo").
+ */
+// Chỉ các trường của ưu đãi mà hội viên được xem (KHÔNG có mức rủi ro / % lúc gửi)
+const OFFER_FIELDS = ['code', 'discount_percent', 'discount_amount', 'plan_price', 'final_price', 'currency',
+    'Contract_period', 'valid_days', 'expires_at', 'createdAt'];
+
+const withOffer = async (me) => {
+    const plain = toPublic(me);
+    const latest = await Offer.findOne({ customer: plain._id, status: 'sent' })
+        .sort({ createdAt: -1 })
+        .select([...OFFER_FIELDS, 'message'].join(' '))
+        .lean();
+    if (latest && plain.admin_message && plain.admin_message === latest.message) delete plain.admin_message;
+    const active = latest && latest.expires_at && new Date(latest.expires_at) > new Date();
+    plain.offer = active ? Object.fromEntries(OFFER_FIELDS.map((f) => [f, latest[f]])) : null;
+    return plain;
+};
 
 const toInt = (v) => {
     const n = Number(v);
@@ -124,7 +157,7 @@ router.get('/me', verifyToken, requireCustomer, async (req, res) => {
     try {
         const me = await Customer.findById(req.user.id).select(PUBLIC_SELECT);
         if (!me) return res.status(404).json({ error: 'Không tìm thấy hồ sơ hội viên.' });
-        res.status(200).json(me);
+        res.status(200).json(await withOffer(me));
     } catch (error) {
         console.error('Lỗi tải hồ sơ hội viên:', error);
         res.status(500).json({ error: 'Lỗi hệ thống khi tải hồ sơ.' });
@@ -145,7 +178,7 @@ router.put('/me', verifyToken, requireCustomer, async (req, res) => {
         const me = await Customer.findByIdAndUpdate(req.user.id, { $set }, { new: true, runValidators: true })
             .select(PUBLIC_SELECT);
         if (!me) return res.status(404).json({ error: 'Không tìm thấy hồ sơ hội viên.' });
-        res.status(200).json({ message: 'Đã cập nhật thông tin cá nhân!', customer: me });
+        res.status(200).json({ message: 'Đã cập nhật thông tin cá nhân!', customer: await withOffer(me) });
     } catch (error) {
         console.error('Lỗi cập nhật hồ sơ hội viên:', error);
         res.status(500).json({ error: 'Lỗi hệ thống khi cập nhật hồ sơ.' });
@@ -172,10 +205,10 @@ router.post('/me/change-plan', verifyToken, requireCustomer, async (req, res) =>
         me.status = 'Chờ duyệt';
         await me.save();
 
-        const plain = me.toObject();
-        delete plain.password;
-        delete plain.predictionHistory;
-        res.status(200).json({ message: `Đã gửi yêu cầu đổi sang gói ${months} tháng. Vui lòng chờ quản trị duyệt.`, customer: plain });
+        res.status(200).json({
+            message: `Đã gửi yêu cầu đổi sang gói ${months} tháng. Vui lòng chờ quản trị duyệt.`,
+            customer: await withOffer(me),
+        });
     } catch (error) {
         console.error('Lỗi đổi gói tập:', error);
         res.status(500).json({ error: 'Lỗi hệ thống khi gửi yêu cầu đổi gói.' });

@@ -1,9 +1,16 @@
 import { useState } from 'react';
+import { PLANS_VN, PLAN_PRICES_VND, formatVnd, pricePerMonth, savingPercent } from '../pricing';
 
+/**
+ * TRANG CHỦ CÔNG KHAI (Landing Page)
+ * Props: onNavigate(view, options?)
+ *   view: 'client_login' | 'login' | 'client_register' | 'predict'
+ *   options: { plan } khi bấm "Chọn gói" ở Bảng giá -> trang Đăng ký chọn sẵn gói đó
+ * Bảng giá lấy từ pricing.js (trùng giá trang Ưu đãi gia hạn).
+ */
 export default function LandingPage({ onNavigate }) {
-  // State quản lý gói tập được chọn khi khách hàng click
-  const [selectedPackage, setSelectedPackage] = useState(6);
   const [activeTab, setActiveTab] = useState('hcm'); // 'hcm' hoặc 'hn'
+  const [hoverPlan, setHoverPlan] = useState(null);  // thẻ giá đang rê chuột
 
   // Hàm cuộn mượt mà đến các phần trên trang
   const scrollToSection = (id) => {
@@ -30,14 +37,16 @@ export default function LandingPage({ onNavigate }) {
         </nav>
         <div style={{ display: 'flex', gap: '15px' }}>
           <button 
-            onClick={() => onNavigate('client_login')} // Chuyển đến trang đăng nhập khách hàng
-            style={{ backgroundColor: 'transparent', color: '#ff3d00', border: '1px solid #ff3d00', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', transition: '0.3s' }}>
-            ĐĂNG NHẬP (KHÁCH HÀNG)
+            onClick={() => onNavigate('client_login')} // Hội viên đăng nhập cổng hội viên
+            title="Dành cho hội viên đã có tài khoản"
+            style={{ backgroundColor: '#ff3d00', color: '#fff', border: '1px solid #ff3d00', padding: '10px 22px', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', transition: '0.3s' }}>
+            ĐĂNG NHẬP HỘI VIÊN
           </button>
           <button 
-            onClick={() => onNavigate('login')} 
-            style={{ backgroundColor: '#ff3d00', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', transition: '0.3s' }}>
-            ĐĂNG NHẬP (ADMIN)
+            onClick={() => onNavigate('login')} // Chủ phòng tập / nhân viên vào trang quản trị
+            title="Dành cho chủ phòng tập và nhân viên"
+            style={{ backgroundColor: 'transparent', color: '#ccc', border: '1px solid #555', padding: '10px 22px', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', transition: '0.3s' }}>
+            QUẢN LÝ
           </button>
         </div>
       </header>
@@ -46,6 +55,7 @@ export default function LandingPage({ onNavigate }) {
       <section id="hero" style={{ 
         height: '100vh', 
         backgroundImage: 'linear-gradient(rgba(0,0,0,0.65), rgba(0,0,0,0.85)), url("https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=2070&auto=format&fit=crop")', 
+        backgroundColor: '#111', // nền dự phòng khi ảnh chưa tải được
         backgroundSize: 'cover', 
         backgroundPosition: 'center',
         display: 'flex', 
@@ -60,7 +70,8 @@ export default function LandingPage({ onNavigate }) {
           THAY ĐỔI THỂ HÌNH, THAY ĐỔI CUỘC SỐNG
         </h1>
         <p style={{ fontSize: '18px', marginBottom: '40px', maxWidth: '700px', lineHeight: '1.6', color: '#ccc' }}>
-          Hệ thống phòng tập thông minh tích hợp trí tuệ nhân tạo (AI) phân tích lộ trình tập luyện và dự báo sức khỏe cá nhân.
+          Hệ thống phòng tập thông minh: trí tuệ nhân tạo (AI) theo dõi thói quen tập luyện và cảnh báo sớm khi hội viên
+          có nguy cơ bỏ tập, để đội ngũ huấn luyện kịp thời đồng hành cùng bạn.
         </p>
         <button 
           onClick={() => onNavigate('client_register')} 
@@ -76,6 +87,9 @@ export default function LandingPage({ onNavigate }) {
           onMouseLeave={(e)=>{e.currentTarget.style.borderColor='rgba(255,255,255,0.45)'; e.currentTarget.style.color='#fff';}}>
           DÙNG THỬ AI DỰ BÁO RỜI BỎ
         </button>
+        <p style={{ marginTop: '12px', fontSize: '13px', color: '#999', maxWidth: '520px', lineHeight: 1.5 }}>
+          Dành cho chủ phòng tập: nhập số liệu một hội viên để xem AI dự báo. Không cần đăng nhập, dữ liệu không được lưu lại.
+        </p>
       </section>
 
       {/* 3. DỊCH VỤ NỔI BẬT (Interactive Cards) */}
@@ -124,66 +138,51 @@ export default function LandingPage({ onNavigate }) {
         </div>
       </section>
 
-      {/* 4. BẢNG CHỌN GÓI TẬP THỰC TẾ (Clickable Pricing Table) */}
+      {/* 4. BẢNG GIÁ (4 gói, có giá — bấm "Chọn gói" -> trang Đăng ký chọn sẵn gói đó) */}
       <section id="pricing" style={{ padding: '100px 50px', backgroundColor: '#0f0f0f', textAlign: 'center' }}>
         <h2 style={{ fontSize: '38px', fontWeight: '900', marginBottom: '15px', textTransform: 'uppercase' }}>BẢNG GIÁ HỘI VIÊN</h2>
-        <p style={{ color: '#888', marginBottom: '40px', fontSize: '16px' }}>Lựa chọn gói tập phù hợp nhất với nhu cầu của bạn</p>
+        <p style={{ color: '#888', marginBottom: '50px', fontSize: '16px' }}>Lựa chọn gói tập phù hợp nhất với nhu cầu của bạn. Gói càng dài, giá mỗi tháng càng tốt.</p>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '30px', flexWrap: 'wrap' }}>
-          
-          {/* Gói 1 Tháng */}
-          <div 
-            onClick={() => setSelectedPackage(1)}
-            style={{ 
-              flex: 1, minWidth: '280px', maxWidth: '350px', backgroundColor: '#1a1a1a', borderRadius: '15px', padding: '40px 30px', cursor: 'pointer',
-              border: selectedPackage === 1 ? '2px solid #ff3d00' : '2px solid #333', position: 'relative', transition: '0.3s'
-            }}>
-            <h3 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '15px' }}>GÓI CƠ BẢN</h3>
-            <div style={{ fontSize: '36px', fontWeight: '900', color: '#ff3d00', marginBottom: '20px' }}>1 Tháng</div>
-            <p style={{ color: '#aaa', marginBottom: '30px' }}>Phù hợp cho người muốn trải nghiệm ngắn hạn toàn bộ dịch vụ.</p>
-            <button onClick={() => onNavigate('client_register')} style={{ width: '100%', padding: '12px', backgroundColor: selectedPackage === 1 ? '#ff3d00' : '#333', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
-              Chọn Gói Này
-            </button>
-          </div>
-
-          {/* Gói 6 Tháng */}
-          <div 
-            onClick={() => setSelectedPackage(6)}
-            style={{ 
-              flex: 1, minWidth: '280px', maxWidth: '350px', backgroundColor: '#1a1a1a', borderRadius: '15px', padding: '40px 30px', cursor: 'pointer',
-              border: selectedPackage === 6 ? '2px solid #ff3d00' : '2px solid #333', position: 'relative', transition: '0.3s'
-            }}>
-            <div style={{ position: 'absolute', top: '-12px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#ff3d00', color: '#fff', padding: '4px 15px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>PHỔ BIẾN NHẤT</div>
-            <h3 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '15px' }}>GÓI TIẾT KIỆM</h3>
-            <div style={{ fontSize: '36px', fontWeight: '900', color: '#ff3d00', marginBottom: '20px' }}>6 Tháng</div>
-            <p style={{ color: '#aaa', marginBottom: '30px' }}>Lộ trình chuẩn hóa giúp bạn thấy rõ sự thay đổi của cơ thể.</p>
-            <button onClick={() => onNavigate('client_register')} style={{ width: '100%', padding: '12px', backgroundColor: selectedPackage === 6 ? '#ff3d00' : '#333', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
-              Chọn Gói Này
-            </button>
-          </div>
-
-          {/* Gói 12 Tháng */}
-          <div 
-            onClick={() => setSelectedPackage(12)}
-            style={{ 
-              flex: 1, minWidth: '280px', maxWidth: '350px', backgroundColor: '#1a1a1a', borderRadius: '15px', padding: '40px 30px', cursor: 'pointer',
-              border: selectedPackage === 12 ? '2px solid #ff3d00' : '2px solid #333', position: 'relative', transition: '0.3s'
-            }}>
-            <h3 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '15px' }}>GÓI VIP ĐẶC QUYỀN</h3>
-            <div style={{ fontSize: '36px', fontWeight: '900', color: '#ff3d00', marginBottom: '20px' }}>12 Tháng</div>
-            <p style={{ color: '#aaa', marginBottom: '30px' }}>Tối ưu chi phí kèm theo đặc quyền phân tích chỉ số AI trọn gói.</p>
-            <button onClick={() => onNavigate('client_register')} style={{ width: '100%', padding: '12px', backgroundColor: selectedPackage === 12 ? '#ff3d00' : '#333', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
-              Chọn Gói Này
-            </button>
-          </div>
-
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '24px', maxWidth: '1300px', margin: '0 auto' }}>
+          {PLANS_VN.map((p) => {
+            const highlight = hoverPlan === null ? !!p.popular : hoverPlan === p.months;
+            const saving = savingPercent(p.months);
+            return (
+              <div key={p.months}
+                onMouseEnter={() => setHoverPlan(p.months)}
+                onMouseLeave={() => setHoverPlan(null)}
+                style={{
+                  backgroundColor: '#1a1a1a', borderRadius: '15px', padding: '40px 26px 30px', position: 'relative', transition: '0.3s',
+                  border: highlight ? '2px solid #ff3d00' : '2px solid #333', display: 'flex', flexDirection: 'column',
+                }}>
+                {p.popular && (
+                  <div style={{ position: 'absolute', top: '-12px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#ff3d00', color: '#fff', padding: '4px 15px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap' }}>PHỔ BIẾN NHẤT</div>
+                )}
+                <h3 style={{ fontSize: '20px', fontWeight: 'bold', margin: '0 0 6px', textTransform: 'uppercase' }}>{p.name}</h3>
+                <div style={{ color: '#aaa', fontSize: '15px', marginBottom: '14px' }}>{p.months} tháng</div>
+                <div style={{ fontSize: '34px', fontWeight: '900', color: '#ff3d00', lineHeight: 1.1 }}>{formatVnd(PLAN_PRICES_VND[p.months])}</div>
+                <div style={{ fontSize: '14px', color: '#bbb', margin: '8px 0 4px', minHeight: '20px' }}>
+                  {saving > 0 ? <>≈ {formatVnd(pricePerMonth(p.months))}/tháng</> : 'Thanh toán theo tháng'}
+                </div>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#4caf50', minHeight: '18px', marginBottom: '16px' }}>
+                  {saving > 0 ? `Tiết kiệm ${saving}% so với gói 1 tháng` : ''}
+                </div>
+                <p style={{ color: '#aaa', margin: '0 0 26px', lineHeight: 1.5, flexGrow: 1 }}>{p.note}</p>
+                <button onClick={() => onNavigate('client_register', { plan: p.months })}
+                  style={{ width: '100%', padding: '12px', backgroundColor: highlight ? '#ff3d00' : '#333', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', transition: '0.3s' }}>
+                  Chọn gói {p.months} tháng
+                </button>
+              </div>
+            );
+          })}
         </div>
+        <p style={{ color: '#666', marginTop: '28px', fontSize: '13px' }}>Giá tham khảo phân khúc tầm trung, đã gồm toàn bộ khu tập và lớp nhóm. Thanh toán tại quầy khi nhân viên duyệt hồ sơ.</p>
       </section>
 
       {/* 5. HỆ THỐNG PHÒNG TẬP (Interactive Tabs) */}
       <section id="locations" style={{ padding: '100px 50px', backgroundColor: '#141414', textAlign: 'center' }}>
         <h2 style={{ fontSize: '38px', fontWeight: '900', marginBottom: '15px', textTransform: 'uppercase' }}>HỆ THỐNG CLB POWER GYM</h2>
-        <p style={{ color: '#888', marginBottom: '40px', fontSize: '16px' }}>Hơn 50+ câu lạc bộ tiêu chuẩn 5 sao trên toàn quốc</p>
+        <p style={{ color: '#888', marginBottom: '40px', fontSize: '16px' }}>Hơn 50 câu lạc bộ tiêu chuẩn 5 sao trên toàn quốc</p>
 
         <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginBottom: '40px' }}>
           <button 
@@ -228,7 +227,7 @@ export default function LandingPage({ onNavigate }) {
       {/* 6. FOOTER */}
       <footer style={{ backgroundColor: '#0a0a0a', color: '#fff', padding: '50px', textAlign: 'center', borderTop: '1px solid #222' }}>
         <h2 style={{ fontSize: '24px', fontWeight: '900', color: '#ff3d00', marginBottom: '10px' }}>POWER GYM.AI</h2>
-        <p style={{ color: '#777', fontSize: '14px' }}>Hệ thống quản lý và dự báo rủi ro khách hàng bằng Machine Learning.</p>
+        <p style={{ color: '#777', fontSize: '14px' }}>Hệ thống quản lý phòng gym tích hợp AI dự báo rủi ro rời bỏ hội viên.</p>
         <p style={{ color: '#555', fontSize: '13px', marginTop: '20px' }}>© 2026 Power Gym. All rights reserved.</p>
       </footer>
 

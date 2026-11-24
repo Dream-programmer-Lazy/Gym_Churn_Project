@@ -7,7 +7,9 @@ import { API_URL } from '../config';
 /**
  * TRANG "ƯU ĐÃI" — duyệt gửi ưu đãi gia hạn (mục 5.2) + nhật ký gửi (mục 5.5)
  * Luồng: chọn thị trường -> xem danh sách ĐỀ XUẤT (mức Cao, chưa nhận ưu đãi trong 30 ngày)
- *        -> bỏ tick người không muốn gửi -> chọn % giảm, hạn dùng, ngân sách -> thấy tổng chi phí -> Gửi.
+ *        -> hệ thống TỰ TICK từ người rủi ro cao nhất xuống, dừng khi chạm ngân sách
+ *        -> chủ phòng tập tick / bỏ tick thêm nếu muốn -> thấy tổng chi phí -> Gửi.
+ * Đổi mức giảm hoặc ngân sách -> tự chọn lại theo ngân sách mới.
  * Không bao giờ tự gửi khi chưa duyệt. Vượt ngân sách -> nút Gửi bị khóa (server cũng kiểm tra lại).
  * Chế độ demo: chưa gửi email thật; ưu đãi (kèm mã riêng) hiện trong cổng hội viên.
  */
@@ -23,13 +25,34 @@ const fmtMoney = (v, region) => (region === 'vn'
 const roundMoney = (v, region) => (region === 'vn' ? Math.round(v / 1000) * 1000 : Math.round(v));
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('vi-VN') : '');
 const fmtDateTime = (d) => (d ? new Date(d).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' }) : '');
+const costOfItem = (it, discount, region) => (it.plan_price ? roundMoney(it.plan_price * discount / 100, region) : 0);
+
+/**
+ * Tự chọn theo ngân sách: đi từ người rủi ro cao nhất xuống (items đã xếp sẵn),
+ * ai còn vừa ngân sách thì tick; người không vừa thì bỏ qua, xét tiếp người sau (có thể gói rẻ hơn).
+ */
+const autoPick = (items, discount, region, budget) => {
+  const picked = new Set();
+  if (!(budget > 0)) return picked;
+  let total = 0;
+  items.forEach((it) => {
+    if (!it.plan_price) return;
+    const cost = costOfItem(it, discount, region);
+    if (total + cost <= budget) {
+      picked.add(String(it._id));
+      total += cost;
+    }
+  });
+  return picked;
+};
 
 export default function OffersPage() {
   const [region, setRegion] = useState('vn');
   const [data, setData] = useState(null);           // kết quả /proposals
   const [log, setLog] = useState([]);
   const [error, setError] = useState('');
-  const [selected, setSelected] = useState(() => new Set());
+  // null = đang ở chế độ "tự chọn theo ngân sách"; Set = chủ phòng tập đã tick / bỏ tick bằng tay
+  const [manual, setManual] = useState(null);
   const [discount, setDiscount] = useState(10);
   const [validDays, setValidDays] = useState(14);
   const [budget, setBudget] = useState(String(MARKETS[0].defaultBudget));
@@ -37,7 +60,7 @@ export default function OffersPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const market = MARKETS.find((m) => m.region === region);
 
-  // Tải đề xuất + nhật ký; mặc định tick TẤT CẢ người đủ điều kiện (chủ phòng tập bỏ tick người không muốn gửi)
+  // Tải đề xuất + nhật ký; danh sách tick do autoPick tính (rủi ro cao nhất trước, vừa ngân sách)
   useEffect(() => {
     let isMounted = true;
     const load = async () => {
@@ -49,7 +72,7 @@ export default function OffersPage() {
         if (!isMounted) return;
         setData(p.data);
         setLog(l.data.items || []);
-        setSelected(new Set(p.data.items.filter((it) => it.plan_price).map((it) => String(it._id))));
+        setManual(null);   // tải mới -> quay về tự chọn theo ngân sách
         setError('');
       } catch (err) {
         if (isMounted && !err.sessionExpired) setError(err.response?.data?.error || 'Không kết nối được máy chủ Node (cổng 3001).');
@@ -64,23 +87,31 @@ export default function OffersPage() {
     setRegion(r);
     setData(null);
     setBudget(String(MARKETS.find((m) => m.region === r).defaultBudget));
+    setManual(null);
   };
+  // Đổi mức giảm / ngân sách -> chi phí từng người đổi -> tự chọn lại theo ngân sách
+  const changeDiscount = (d) => { setDiscount(d); setManual(null); };
+  const changeBudget = (v) => { setBudget(v); setManual(null); };
 
   const items = useMemo(() => data?.items || [], [data]);
-  const costOf = (it) => (it.plan_price ? roundMoney(it.plan_price * discount / 100, region) : 0);
+  const costOf = (it) => costOfItem(it, discount, region);
+  const budgetNum = Number(String(budget).replace(/[^\d.]/g, ''));
+  const autoSelected = useMemo(() => autoPick(items, discount, region, budgetNum), [items, discount, region, budgetNum]);
+  const selected = manual ?? autoSelected;
+  const isAuto = manual === null;
   const chosen = items.filter((it) => selected.has(String(it._id)));
   const totalCost = chosen.reduce((s, it) => s + costOf(it), 0);
-  const budgetNum = Number(String(budget).replace(/[^\d.]/g, ''));
   const overBudget = !(budgetNum > 0) || totalCost > budgetNum;
   const selectable = items.filter((it) => it.plan_price);
   const allChecked = selectable.length > 0 && selectable.every((it) => selected.has(String(it._id)));
 
-  const toggle = (id) => setSelected((prev) => {
-    const next = new Set(prev);
+  const toggle = (id) => {
+    const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const toggleAll = () => setSelected(allChecked ? new Set() : new Set(selectable.map((it) => String(it._id))));
+    setManual(next);
+  };
+  const toggleAll = () => setManual(allChecked ? new Set() : new Set(selectable.map((it) => String(it._id))));
+  const notPicked = selectable.length - chosen.length;
 
   const send = async () => {
     if (!chosen.length || overBudget) return;
@@ -151,7 +182,7 @@ export default function OffersPage() {
             <span className="ad-label">Mức giảm (trên giá gia hạn đúng gói hiện tại)</span>
             <div className="ad-seg-choice" role="group" aria-label="Mức giảm">
               {(data?.discountOptions || [5, 10, 15]).map((d) => (
-                <button key={d} type="button" {...chip(discount === d)} onClick={() => setDiscount(d)}>{d}%</button>
+                <button key={d} type="button" {...chip(discount === d)} onClick={() => changeDiscount(d)}>{d}%</button>
               ))}
             </div>
           </div>
@@ -166,7 +197,7 @@ export default function OffersPage() {
           <div className="ad-field">
             <label className="ad-label" htmlFor="offer-budget">Ngân sách đợt này ({region === 'vn' ? 'VNĐ' : 'USD'})</label>
             <input id="offer-budget" className="ad-input ad-num" type="number" min="0" step={region === 'vn' ? 100000 : 10}
-              value={budget} onChange={(e) => setBudget(e.target.value)} />
+              value={budget} onChange={(e) => changeBudget(e.target.value)} />
             <span className="ad-hint">{budgetNum > 0 ? fmtMoney(budgetNum, region) : 'Nhập số tiền lớn hơn 0'}</span>
           </div>
         </div>
@@ -181,10 +212,15 @@ export default function OffersPage() {
               {data && <span className="ad-count ad-num">{items.length} người</span>}
             </h3>
             <p className="ad-h3-sub">
-              Xếp theo % rủi ro giảm dần. Bỏ tick người không muốn gửi.
+              Xếp theo % rủi ro giảm dần. Hệ thống tự tick người rủi ro cao nhất cho vừa ngân sách; bạn có thể tick / bỏ tick thêm.
               {data?.recentlyOffered ? ` Đã ẩn ${data.recentlyOffered} người vừa nhận ưu đãi trong ${data.cooldownDays} ngày.` : ''}
             </p>
           </div>
+          {!isAuto && selectable.length > 0 && (
+            <button className="ad-btn is-sm" onClick={() => setManual(null)} title="Bỏ các lựa chọn tay, tick lại theo ngân sách">
+              <RefreshCw size={14} /> Chọn lại theo ngân sách
+            </button>
+          )}
         </div>
 
         <div className="ad-table-scroll" style={{ maxHeight: 460 }}>
@@ -198,7 +234,7 @@ export default function OffersPage() {
                 <th>Rủi ro</th>
                 <th>Gói hiện tại</th>
                 <th>Giảm ({discount}%)</th>
-                <th>Lý do chính</th>
+                <th style={{ textAlign: 'left' }}>Lý do chính</th>
               </tr>
             </thead>
             <tbody>
@@ -227,8 +263,8 @@ export default function OffersPage() {
                       <div className="ad-cell-sub ad-num">{disabled ? 'Không có trong bảng giá' : fmtMoney(it.plan_price, region)}</div>
                     </td>
                     <td className="ad-num">{disabled ? '—' : fmtMoney(costOf(it), region)}</td>
-                    <td style={{ maxWidth: 320, fontSize: 12.5, color: 'var(--ink-2)' }}>
-                      <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={it.mainReason}>{it.mainReason || '—'}</div>
+                    <td style={{ textAlign: 'left', minWidth: 280, maxWidth: 460, fontSize: 12.5, lineHeight: 1.45, color: 'var(--ink-2)', whiteSpace: 'normal' }}>
+                      {it.mainReason || '—'}
                     </td>
                   </tr>
                 );
@@ -245,6 +281,13 @@ export default function OffersPage() {
             {' / '}ngân sách <b className="ad-num">{budgetNum > 0 ? fmtMoney(budgetNum, region) : '—'}</b>
             {chosen.length > 0 && totalCost > budgetNum && budgetNum > 0 && (
               <span style={{ color: 'var(--high-ink)', marginLeft: 8 }}>Vượt {fmtMoney(totalCost - budgetNum, region)}: bỏ bớt người hoặc giảm mức ưu đãi.</span>
+            )}
+            {!overBudget && notPicked > 0 && (
+              <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
+                {isAuto
+                  ? <>Đã tự chọn những người rủi ro cao nhất vừa đủ ngân sách. Còn <b className="ad-num">{notPicked}</b> người chưa chọn: tăng ngân sách hoặc giảm mức ưu đãi để gửi thêm.</>
+                  : <>Còn <b className="ad-num">{notPicked}</b> người chưa chọn.</>}
+              </div>
             )}
           </div>
           <button className="ad-btn is-primary" onClick={send} disabled={sending || !chosen.length || overBudget}>
